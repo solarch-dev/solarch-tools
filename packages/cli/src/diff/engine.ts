@@ -1,0 +1,265 @@
+/** Graph diff (drift) motoru — As-Is (koddan taranan) ile To-Be (Solarch Cloud)
+ *  grafiğini karşılaştırır.
+ *
+ *  Eşleştirme: AST tarafında UUID olmadığından node'lar `(kind, kanonik isim)`
+ *  anahtarıyla eşleşir; eşleşmeler map.json cache'ine yazılır ki cloud'da yeniden
+ *  adlandırma yapılana dek kararlı kalsın (cache'teki cloud id hâlâ yaşıyorsa
+ *  isim değişse bile eşleşme korunur).
+ *
+ *  Önem dereceleri (plan sözleşmesi):
+ *  - error: kural ihlali (blacklist / whitelist dışı edge) VE cloud'da olup
+ *    kodda olmayan node/edge (mimari taahhüdü kod karşılamıyor).
+ *  - warn: kodda olup cloud'da olmayan node/edge (onaysız genişleme).
+ *  - info: property seviyesi farklar (kolon/alan).  */
+
+import {
+  nameOfNode,
+  nodeKey,
+  type AsIsEdge,
+  type AsIsGraph,
+  type AsIsNode,
+  type EdgeKind,
+  type NodeKind,
+} from "@solarch/ast-core";
+import type { CloudEdge, CloudGraph, CloudNode, RuleCatalog } from "../api.js";
+import type { MatchCache } from "../config.js";
+
+export type Severity = "error" | "warn" | "info";
+
+export interface DriftFinding {
+  severity: Severity;
+  code:
+    | "DRIFT_NODE_MISSING_IN_CODE"
+    | "DRIFT_NODE_NOT_IN_CLOUD"
+    | "DRIFT_EDGE_MISSING_IN_CODE"
+    | "DRIFT_EDGE_NOT_IN_CLOUD"
+    | "DRIFT_ILLEGAL_EDGE"
+    | "DRIFT_PROPERTY";
+  message: string;
+  /** As-Is tarafında kanıt dosyası (varsa) — CI annotation'ları için. */
+  file?: string;
+  suggestion?: string;
+}
+
+export interface DiffResult {
+  findings: DriftFinding[];
+  matched: number;
+  counts: { errors: number; warns: number; infos: number };
+  /** Güncellenmiş eşleştirme cache'i — çağıran map.json'a yazar. */
+  cache: MatchCache;
+}
+
+/* ── kural değerlendirme ─────────────────────────────────────────── */
+
+const toArray = <T>(v: T | T[]): T[] => (Array.isArray(v) ? v : [v]);
+const matches = (pattern: string | string[], value: string): boolean =>
+  toArray(pattern).some((p) => p === "*" || p === value);
+
+/** As-Is edge'in legalliği — önce blacklist (keskin yasak), sonra whitelist
+ *  (default deny). Backend RulesEngine ile aynı sıra. */
+function evaluateEdge(
+  rules: RuleCatalog,
+  source: NodeKind,
+  edge: EdgeKind,
+  target: NodeKind,
+): { allowed: boolean; message?: string; suggestion?: string } {
+  for (const deny of rules.blacklist) {
+    if (matches(deny.source, source) && matches(deny.edge, edge) && matches(deny.target, target)) {
+      return { allowed: false, message: `${deny.code}: ${deny.message}`, suggestion: deny.suggestion };
+    }
+  }
+  const allowed = rules.whitelist.some(
+    (rule) =>
+      toArray(rule.source).includes(source) &&
+      toArray(rule.edge).includes(edge) &&
+      toArray(rule.target).includes(target),
+  );
+  return allowed
+    ? { allowed: true }
+    : {
+        allowed: false,
+        message: `${source} -[${edge}]-> ${target} is not in the whitelist (default deny).`,
+        suggestion: "Add this connection in the Solarch canvas first, or remove it from the code.",
+      };
+}
+
+/* ── property karşılaştırma (info seviyesi) ──────────────────────── */
+
+function listNames(properties: Record<string, unknown>, listField: string, nameField: string): Set<string> {
+  const list = properties[listField];
+  if (!Array.isArray(list)) return new Set();
+  return new Set(
+    list
+      .map((item) => (item && typeof item === "object" ? String((item as Record<string, unknown>)[nameField] ?? "") : ""))
+      .filter(Boolean)
+      .map((n) => n.toLowerCase()),
+  );
+}
+
+/** Tablo kolonları / DTO alanları gibi liste-property farkları. */
+function propertyDrift(asIs: AsIsNode, cloud: CloudNode): string[] {
+  const spec: Partial<Record<NodeKind, { listField: string; nameField: string; label: string }>> = {
+    Table: { listField: "Columns", nameField: "Name", label: "column" },
+    DTO: { listField: "Fields", nameField: "Name", label: "field" },
+    Service: { listField: "Methods", nameField: "MethodName", label: "method" },
+    Controller: { listField: "Endpoints", nameField: "Route", label: "endpoint" },
+    Enum: { listField: "Values", nameField: "Key", label: "value" },
+  };
+  const s = spec[asIs.kind];
+  if (!s) return [];
+
+  const inCode = listNames(asIs.properties, s.listField, s.nameField);
+  const inCloud = listNames(cloud.properties, s.listField, s.nameField);
+  const drifts: string[] = [];
+  const missing = [...inCloud].filter((n) => !inCode.has(n));
+  const extra = [...inCode].filter((n) => !inCloud.has(n));
+  if (missing.length > 0) drifts.push(`${s.label}(s) in cloud but not in code: ${missing.join(", ")}`);
+  if (extra.length > 0) drifts.push(`${s.label}(s) in code but not in cloud: ${extra.join(", ")}`);
+  return drifts;
+}
+
+/* ── ana diff ────────────────────────────────────────────────────── */
+
+export function diffGraphs(
+  asIs: AsIsGraph,
+  toBe: CloudGraph,
+  rules: RuleCatalog | null,
+  previousCache: MatchCache,
+): DiffResult {
+  const findings: DriftFinding[] = [];
+  const cache: MatchCache = {};
+
+  // Cloud node'ları kanonik anahtara ve id'ye indeksle.
+  const cloudById = new Map<string, CloudNode>();
+  const cloudByKey = new Map<string, CloudNode>();
+  for (const n of toBe.nodes) {
+    cloudById.set(n.id, n);
+    const name = nameOfNode(n.type, n.properties);
+    if (name) cloudByKey.set(nodeKey(n.type, name), n);
+  }
+
+  // Eşleştirme: önce cache (cloud id hâlâ var mı), sonra kanonik anahtar.
+  const codeKeyToCloudId = new Map<string, string>();
+  const matchedCloudIds = new Set<string>();
+  for (const node of asIs.nodes) {
+    const cachedId = previousCache[node.key];
+    const cached = cachedId ? cloudById.get(cachedId) : undefined;
+    const found = cached && cached.type === node.kind ? cached : cloudByKey.get(node.key);
+    if (found && !matchedCloudIds.has(found.id)) {
+      codeKeyToCloudId.set(node.key, found.id);
+      matchedCloudIds.add(found.id);
+      cache[node.key] = found.id;
+    }
+  }
+
+  // Node farkları.
+  for (const cloud of toBe.nodes) {
+    if (matchedCloudIds.has(cloud.id)) continue;
+    const name = nameOfNode(cloud.type, cloud.properties) || cloud.id;
+    findings.push({
+      severity: "error",
+      code: "DRIFT_NODE_MISSING_IN_CODE",
+      message: `${cloud.type} "${name}" exists in the architecture but not in the code.`,
+      suggestion: "Implement it, or remove it from the Solarch canvas if it is obsolete.",
+    });
+  }
+  for (const node of asIs.nodes) {
+    if (codeKeyToCloudId.has(node.key)) continue;
+    findings.push({
+      severity: "warn",
+      code: "DRIFT_NODE_NOT_IN_CLOUD",
+      message: `${node.kind} "${node.name}" (${node.file}) exists in the code but not in the architecture.`,
+      file: node.file,
+      suggestion: "Add it to the Solarch canvas so the architecture stays the single source of truth.",
+    });
+  }
+
+  // Edge farkları — yalnız iki ucu da eşleşen node'lar üzerinde konuşulabilir.
+  const cloudIdToCodeKey = new Map<string, string>();
+  for (const [codeKey, cloudId] of codeKeyToCloudId) cloudIdToCodeKey.set(cloudId, codeKey);
+
+  const asIsEdgeSet = new Map<string, AsIsEdge>();
+  for (const e of asIs.edges) asIsEdgeSet.set(`${e.sourceKey}|${e.kind}|${e.targetKey}`, e);
+
+  const cloudEdgeSet = new Set<string>();
+  const describeCloudNode = (id: string): string => {
+    const n = cloudById.get(id);
+    if (!n) return id;
+    return `${n.type} "${nameOfNode(n.type, n.properties) || n.id}"`;
+  };
+
+  for (const edge of toBe.edges) {
+    const srcKey = cloudIdToCodeKey.get(edge.sourceNodeId);
+    const tgtKey = cloudIdToCodeKey.get(edge.targetNodeId);
+    if (srcKey && tgtKey) cloudEdgeSet.add(`${srcKey}|${edge.kind}|${tgtKey}`);
+  }
+
+  for (const edge of toBe.edges) {
+    const srcKey = cloudIdToCodeKey.get(edge.sourceNodeId);
+    const tgtKey = cloudIdToCodeKey.get(edge.targetNodeId);
+    if (!srcKey || !tgtKey) continue; // ucu eksikse node bulgusu zaten verildi
+    if (!asIsEdgeSet.has(`${srcKey}|${edge.kind}|${tgtKey}`)) {
+      findings.push({
+        severity: "error",
+        code: "DRIFT_EDGE_MISSING_IN_CODE",
+        message: `${describeCloudNode(edge.sourceNodeId)} -[${edge.kind}]-> ${describeCloudNode(edge.targetNodeId)} is in the architecture but not implemented in code.`,
+        suggestion: "Wire this dependency in the code (constructor injection / call), or remove the edge from the canvas.",
+      });
+    }
+  }
+
+  const kindOfKey = (key: string): NodeKind => key.split(":")[0] as NodeKind;
+
+  for (const edge of asIs.edges) {
+    const bothMatched = codeKeyToCloudId.has(edge.sourceKey) && codeKeyToCloudId.has(edge.targetKey);
+    const inCloud = cloudEdgeSet.has(`${edge.sourceKey}|${edge.kind}|${edge.targetKey}`);
+
+    // Legalite — cloud'da olsun olmasın koddaki her edge kurala uymalı.
+    if (rules) {
+      const verdict = evaluateEdge(rules, kindOfKey(edge.sourceKey), edge.kind, kindOfKey(edge.targetKey));
+      if (!verdict.allowed) {
+        findings.push({
+          severity: "error",
+          code: "DRIFT_ILLEGAL_EDGE",
+          message: `${edge.key} (${edge.file}: ${edge.reason}) — ${verdict.message}`,
+          file: edge.file,
+          suggestion: verdict.suggestion,
+        });
+        continue; // illegal edge için ayrıca "not in cloud" uyarısı gürültü olur
+      }
+    }
+
+    if (bothMatched && !inCloud) {
+      findings.push({
+        severity: "warn",
+        code: "DRIFT_EDGE_NOT_IN_CLOUD",
+        message: `${edge.key} (${edge.file}: ${edge.reason}) exists in the code but not in the architecture.`,
+        file: edge.file,
+        suggestion: "Add this connection on the Solarch canvas to keep the diagram truthful.",
+      });
+    }
+  }
+
+  // Property seviyesi (info) — eşleşen node çiftlerinde.
+  for (const [codeKey, cloudId] of codeKeyToCloudId) {
+    const asIsNode = asIs.nodes.find((n) => n.key === codeKey);
+    const cloudNode = cloudById.get(cloudId);
+    if (!asIsNode || !cloudNode) continue;
+    for (const drift of propertyDrift(asIsNode, cloudNode)) {
+      findings.push({
+        severity: "info",
+        code: "DRIFT_PROPERTY",
+        message: `${asIsNode.kind} "${asIsNode.name}": ${drift}`,
+        file: asIsNode.file,
+      });
+    }
+  }
+
+  const counts = {
+    errors: findings.filter((f) => f.severity === "error").length,
+    warns: findings.filter((f) => f.severity === "warn").length,
+    infos: findings.filter((f) => f.severity === "info").length,
+  };
+
+  return { findings, matched: codeKeyToCloudId.size, counts, cache };
+}

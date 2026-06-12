@@ -1,0 +1,23 @@
+{
+  "name": "@solarch/mcp",
+  "version": "0.0.1",
+  "description": "Solarch MCP server — Phase 3 placeholder (read-only architecture tools + safe mutations for AI agents)",
+  "type": "module",
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean",
+    "test": "echo \"@solarch/mcp: Faz 3'te doldurulacak — test yok\" && exit 0",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@solarch/ast-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  }
+}

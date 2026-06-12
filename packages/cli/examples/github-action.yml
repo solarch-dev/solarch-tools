@@ -1,0 +1,37 @@
+# Solarch drift check — mimariyi bozan kod merge edilemez.
+#
+# Kurulum:
+# 1. Solarch app → Settings → API Keys → yeni anahtar üret.
+# 2. Repo Settings → Secrets → SOLARCH_API_KEY olarak ekle.
+# 3. Repo köküne `solarch link` ile solarch.json commit'le.
+#
+# `solarch diff --ci` GitHub annotation basar; error seviyesinde drift
+# (kural ihlali veya mimaride olup kodda olmayan parça) job'ı kırar.
+
+name: solarch-drift
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Solarch CLI
+        run: npm install -g @solarch/cli
+
+      - name: Login
+        run: solarch login --key "$SOLARCH_API_KEY"
+        env:
+          SOLARCH_API_KEY: ${{ secrets.SOLARCH_API_KEY }}
+
+      - name: Drift check
+        run: solarch diff --ci

@@ -1,0 +1,32 @@
+{
+  "name": "@solarch/cli",
+  "version": "0.1.0",
+  "description": "Solarch CLI — architecture drift check, live binding and cloud sync for NestJS codebases",
+  "type": "module",
+  "bin": {
+    "solarch": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@solarch/ast-core": "workspace:*",
+    "chokidar": "^5.0.0",
+    "commander": "^15.0.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}
