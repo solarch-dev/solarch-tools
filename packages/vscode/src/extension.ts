@@ -6,7 +6,7 @@
 
 import { accessSync } from "node:fs";
 import * as vscode from "vscode";
-import { linkAction, loginAction, pullAction, pushAction } from "./actions.js";
+import { generateAction, linkAction, loginAction, pullAction, pushAction } from "./actions.js";
 import { StateEngine } from "./state.js";
 import { RevisionLog, StateTreeProvider } from "./tree.js";
 import type { GraphState } from "./shared.js";
@@ -125,6 +125,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("solarch.push", async () => {
       if (!rootDir) return;
       if (await pushAction(rootDir)) await refresh(true);
+    }),
+    vscode.commands.registerCommand("solarch.generate", async () => {
+      if (!rootDir) {
+        void vscode.window.showWarningMessage("Solarch: open a linked folder first.");
+        return;
+      }
+      if (await generateAction(rootDir)) await refresh(false);
     }),
   );
 

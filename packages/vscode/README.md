@@ -30,9 +30,10 @@ no terminal required.
   violation, yellow = unapproved addition, blue = property drift. Click a
   finding to jump to the evidence file.
 - **Implementation** (appears in repos with generated scaffolds): how much of
-  the generated code is actually filled in — `12/40 implemented (30%)` — plus
-  the list of `NOT_IMPLEMENTED` members with their business description.
-  Click one to jump straight to the marked line. The same counter is shown in
+  the generated code is actually filled in — `12/40 implemented (30%)` —
+  **grouped by file**: each file shows how many members are waiting, expand it
+  to see the `NOT_IMPLEMENTED` members with their business description. Click
+  a member to jump straight to the marked line. The same counter is shown in
   the status bar.
 
 ## Buttons — the CLI runs in the background, no terminal
@@ -49,6 +50,13 @@ no terminal required.
     nodes changed in the cloud meanwhile are skipped and reported.
   - **Pull:** downloads the To-Be graph to `.solarch/to-be.json` and reports
     a summary toast.
+- **Generate Code** (view menu `…` / command palette): produces the
+  deterministic code scaffold from the cloud graph and writes it into the
+  workspace. A modal lets you choose **"Only new files"** (existing files —
+  including your implemented method bodies — are never touched) or
+  **"Overwrite all"** (reset to a fresh scaffold). The new files arrive with
+  `@solarch:surgical` markers, so the Implementation section immediately shows
+  what to fill in.
 - Identity and the project link are the same files the CLI uses
   (`~/.solarch/credentials`, `solarch.json`) — fully interchangeable with
   `solarch login` / `solarch link` in a terminal.

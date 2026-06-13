@@ -14,6 +14,7 @@ import { statusCommand } from "./commands/status.js";
 import { diffCommand } from "./commands/diff.js";
 import { pullCommand } from "./commands/pull.js";
 import { pushCommand } from "./commands/push.js";
+import { generateCommand } from "./commands/generate.js";
 import { bindCommand } from "./commands/bind.js";
 import { watchCommand } from "./commands/watch.js";
 
@@ -81,6 +82,14 @@ program
   .option("--yes", "Skip the confirmation prompt (CI)")
   .action(async (opts: { yes?: boolean }) => {
     await pushCommand({ rootDir: process.cwd(), yes: opts.yes });
+  });
+
+program
+  .command("generate")
+  .description("Generate the deterministic code scaffold from the cloud graph into this repo")
+  .option("--force", "Overwrite existing files (default: skip them)")
+  .action(async (opts: { force?: boolean }) => {
+    await generateCommand({ rootDir: process.cwd(), force: opts.force });
   });
 
 program

@@ -25,6 +25,7 @@ import {
   toApplyPayload,
   toBePath,
   writeCredentials,
+  writeGeneratedFiles,
   writeMatchCache,
   writeProjectConfig,
   type PushPlan,
@@ -145,6 +146,65 @@ export async function pullAction(rootDir: string): Promise<void> {
   ).then(undefined, (e: Error) => {
     void vscode.window.showErrorMessage(`Solarch: pull failed — ${e.message}`);
   });
+}
+
+/* ── generate ────────────────────────────────────────────────────── */
+
+/** Cloud'daki graftan deterministik kod iskeletini üretip workspace'e yazar.
+ *  Emek koruması: mevcut dosyalar varsayılan atlanır; kullanıcı modal'da
+ *  "Overwrite all" derse üzerine yazılır. */
+export async function generateAction(rootDir: string): Promise<boolean> {
+  const config = readProjectConfig(rootDir);
+  if (!config?.projectId) {
+    void vscode.window.showWarningMessage("Solarch: link a project first.");
+    return false;
+  }
+  let api: SolarchApi;
+  try {
+    api = SolarchApi.fromStoredCredentials();
+  } catch (e) {
+    void vscode.window.showWarningMessage(`Solarch: ${(e as Error).message}`);
+    return false;
+  }
+
+  try {
+    const project = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Solarch: generating code from the architecture…" },
+      () => api.generateCode(config.projectId),
+    );
+
+    const markers = project.files.reduce((acc, f) => acc + f.surgicalMarkers, 0);
+    const choice = await vscode.window.showInformationMessage(
+      `Apply ${project.files.length} generated file(s) to this workspace?`,
+      {
+        modal: true,
+        detail:
+          `${markers} surgical marker(s) will be waiting in the Implementation section.\n\n` +
+          `"Only new files" keeps every existing file untouched (your implemented code is safe).\n` +
+          `"Overwrite all" resets existing files to the fresh scaffold.` +
+          (project.warnings.length > 0 ? `\n\nWarnings:\n${project.warnings.map((w) => `• ${w}`).join("\n")}` : ""),
+      },
+      "Only new files",
+      "Overwrite all",
+    );
+    if (!choice) return false;
+
+    const result = writeGeneratedFiles(rootDir, project.files, { force: choice === "Overwrite all" });
+    const applied = result.written.length + result.overwritten.length;
+    void vscode.window.showInformationMessage(
+      `Solarch: ${applied} file(s) applied` +
+        (result.skipped.length > 0 ? `, ${result.skipped.length} existing skipped` : "") +
+        ". Check the Implementation section for what to fill in.",
+    );
+    return applied > 0;
+  } catch (e) {
+    const msg =
+      e instanceof ApiError && e.code === "ERR_PLAN_AI"
+        ? "code generation requires a Build plan — upgrade in the Solarch app."
+        : (e as Error).message;
+    void vscode.window.showErrorMessage(`Solarch: generate failed — ${msg}`);
+    return false;
+  }
 }
 
 /* ── push ────────────────────────────────────────────────────────── */

@@ -16,9 +16,13 @@ export {
   type CloudEdge,
   type CloudGraph,
   type CloudNode,
+  type GeneratedFile,
+  type GeneratedProject,
   type ProjectSummary,
   type RuleCatalog,
 } from "./api.js";
+
+export { writeGeneratedFiles, type WriteResult } from "./commands/generate.js";
 
 export {
   DEFAULT_API_URL,

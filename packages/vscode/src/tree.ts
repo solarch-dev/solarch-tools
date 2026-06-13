@@ -79,10 +79,11 @@ export class StateTreeProvider implements vscode.TreeDataProvider<Item> {
     }
 
     if (!parent) return this.rootItems(this.state);
-    const section = (parent as Item & { sectionId?: string }).sectionId;
-    if (section === "revisions") return this.revisionItems(this.state);
-    if (section === "drift") return this.driftItems(this.state);
-    if (section === "implementation") return this.implementationItems(this.state);
+    const meta = parent as Item & { sectionId?: string; implFile?: string };
+    if (meta.sectionId === "revisions") return this.revisionItems(this.state);
+    if (meta.sectionId === "drift") return this.driftItems(this.state);
+    if (meta.sectionId === "implementation") return this.implementationFileItems(this.state);
+    if (meta.implFile) return this.implementationMemberItems(this.state, meta.implFile);
     return [];
   }
 
@@ -187,23 +188,45 @@ export class StateTreeProvider implements vscode.TreeDataProvider<Item> {
       });
   }
 
-  private implementationItems(state: Extract<GraphState, { ok: true }>): Item[] {
+  /** Bekleyen bölgeler DOSYA bazında gruplanır — "hangi dosyalarda iş var"
+   *  tek bakışta görünsün. Dosya satırı tıklanınca dosya açılır; altındaki
+   *  üyeler işaretli satıra zıplar. */
+  private implementationFileItems(state: Extract<GraphState, { ok: true }>): Item[] {
     const impl = state.implementation;
     if (impl.skeletons.length === 0) return [info("All generated scaffolds are implemented", "check")];
-    return impl.skeletons.map((s) => {
-      const item = new vscode.TreeItem(`${s.className}.${s.member}`);
-      item.iconPath = new vscode.ThemeIcon("circle-large-outline", new vscode.ThemeColor("charts.orange"));
-      item.description = `${s.file}:${s.line}`;
-      item.tooltip = s.description
-        ? `NOT_IMPLEMENTED — what it should do:\n\n${s.description}`
-        : "NOT_IMPLEMENTED — generated scaffold waiting to be filled in.";
-      item.command = {
-        command: "solarch.openFinding",
-        title: "Open",
-        arguments: [s.file, s.line],
-      };
-      return item;
-    });
+
+    const byFile = new Map<string, number>();
+    for (const s of impl.skeletons) byFile.set(s.file, (byFile.get(s.file) ?? 0) + 1);
+
+    return [...byFile.entries()]
+      .sort((a, b) => b[1] - a[1]) // en çok eksiği olan dosya üstte
+      .map(([file, count]) => {
+        const item = new vscode.TreeItem(file, vscode.TreeItemCollapsibleState.Expanded);
+        (item as Item & { implFile?: string }).implFile = file;
+        item.iconPath = new vscode.ThemeIcon("file-code", new vscode.ThemeColor("charts.orange"));
+        item.description = `${count} to implement`;
+        item.tooltip = `${file} — ${count} NOT_IMPLEMENTED member(s)`;
+        return item;
+      });
+  }
+
+  private implementationMemberItems(state: Extract<GraphState, { ok: true }>, file: string): Item[] {
+    return state.implementation.skeletons
+      .filter((s) => s.file === file)
+      .map((s) => {
+        const item = new vscode.TreeItem(`${s.className}.${s.member}`);
+        item.iconPath = new vscode.ThemeIcon("circle-large-outline", new vscode.ThemeColor("charts.orange"));
+        item.description = `:${s.line}`;
+        item.tooltip = s.description
+          ? `NOT_IMPLEMENTED — what it should do:\n\n${s.description}`
+          : "NOT_IMPLEMENTED — generated scaffold waiting to be filled in.";
+        item.command = {
+          command: "solarch.openFinding",
+          title: "Open",
+          arguments: [s.file, s.line],
+        };
+        return item;
+      });
   }
 }
 

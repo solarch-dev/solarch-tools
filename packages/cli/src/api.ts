@@ -79,6 +79,26 @@ export type ApplyResult =
   | { success: true; idMap: Record<string, string>; nodeCount: number; edgeCount: number; graphRevision: number }
   | { success: false; transactionStatus: "ROLLED_BACK"; message: string; violations: ApplyViolation[] };
 
+/* ── codegen (Constructor) ── */
+
+export interface GeneratedFile {
+  /** Proje köküne göreli POSIX yolu (baş "/" yok). */
+  path: string;
+  content: string;
+  language: string;
+  /** Dosyadaki @solarch:surgical işaret sayısı. */
+  surgicalMarkers: number;
+  /** Dosyayı üreten node'un UUID'si (scaffold dosyalarında yok). */
+  nodeId?: string;
+}
+
+export interface GeneratedProject {
+  target: string;
+  files: GeneratedFile[];
+  nodeFiles: Record<string, string[]>;
+  warnings: string[];
+}
+
 export interface RuleCatalog {
   whitelist: {
     source: NodeKind | NodeKind[];
@@ -170,6 +190,15 @@ export class SolarchApi {
     return this.request<ApplyResult>(`/projects/${projectId}/graph/apply`, {
       method: "POST",
       body: JSON.stringify(payload),
+    });
+  }
+
+  /** Deterministik kod üretimi (Constructor) — graftan NestJS iskeleti.
+   *  Build+ plan gerektirir (402 ERR_PLAN_AI). */
+  generateCode(projectId: string): Promise<GeneratedProject> {
+    return this.request<GeneratedProject>(`/projects/${projectId}/codegen`, {
+      method: "POST",
+      body: JSON.stringify({ target: "nestjs" }),
     });
   }
 

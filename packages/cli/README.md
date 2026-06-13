@@ -113,6 +113,20 @@ Güvenlik kuralları:
 | Graf revizyonu eskidi (`ERR_GRAPH_REVISION_CONFLICT`, 409) | Otomatik: taze graf çekilir, plan yeniden hesaplanır, **bir kez** yeniden denenir. İkinci 409'da kullanıcıya bırakılır. |
 | Node bu arada değişti (`ERR_VERSION_CONFLICT`, 409) | İnteraktif seçim: **cloud'u tut / kodu yaz / atla**. TTY yoksa (CI) otomatik "atla" + rapor. |
 
+### `solarch generate`
+
+Cloud'daki graftan **deterministik kod iskeletini** üretir ve repoya yazar
+(Constructor — AI'sız, aynı graf → bayt-aynı çıktı). Metot gövdeleri
+`@solarch:surgical` işaretli gelir; sonrası `solarch status` ile takip edilir.
+
+| Seçenek | Davranış |
+|---|---|
+| (varsayılan) | Yalnız **yeni** dosyalar yazılır — elle/AI ile doldurulmuş kod asla ezilmez |
+| `--force` | Mevcut dosyaların da üzerine yazar (taze iskelete sıfırlama) |
+
+Build+ plan gerektirir (`402 ERR_PLAN_AI`). Akış: `generate` → `status` →
+(cerrahi AI / insan doldurur) → `diff` ile mimari doğrulama.
+
 ### `solarch bind <kaynak> <hedef>`
 
 Kalıcı canlı bağ tanımlar (`solarch.json`'a yazar) ve hemen bir kez çalıştırır:

@@ -2,7 +2,7 @@
   "name": "solarch-vscode",
   "displayName": "Solarch",
   "description": "Architecture graph + drift status for Solarch-linked NestJS repos — see the live state of code vs architecture, like Git Graph but for your system design",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "solarch",
   "private": true,
   "icon": "media/icon.png",
@@ -65,6 +65,11 @@
         "icon": "$(plug)"
       },
       {
+        "command": "solarch.generate",
+        "title": "Solarch: Generate Code from Architecture",
+        "icon": "$(rocket)"
+      },
+      {
         "command": "solarch.checkDrift",
         "title": "Solarch: Check Drift"
       }
@@ -85,6 +90,11 @@
           "command": "solarch.refresh",
           "when": "view == solarchState",
           "group": "navigation@3"
+        },
+        {
+          "command": "solarch.generate",
+          "when": "view == solarchState && solarch.status == 'ok'",
+          "group": "1_actions@1"
         }
       ]
     },
