@@ -44,13 +44,11 @@ okur (As-Is) ve ikisini iki yönde senkron tutar:
 ## Hızlı başlangıç
 
 ```bash
-pnpm install && pnpm build
+pnpm install && pnpm install:cli   # global `solarch` komutu — registry gerekmez
 
 # 1. Solarch app → Settings → API Keys → anahtar üret
-solarch login
-
-# 2. NestJS repo'nun kökünde: projeye bağla (solarch.json yazar)
-solarch link
+# 2. NestJS repo kökünde:
+solarch connect
 
 # 3. Lokal grafı gör / drift kontrolü / implementasyon panosu
 solarch scan
@@ -58,6 +56,7 @@ solarch diff            # insan-okur rapor
 solarch diff --ci       # GitHub annotations + exit code
 solarch diff --json     # makine-okur
 solarch status          # üretilen iskeletin ne kadarı dolduruldu? (--ci: iskelet kaldıysa kır)
+solarch status --report # doluluk sayaçlarını cloud'a yaz (canvas rozetleri)
 
 # 4. Çift yönlü senkron
 solarch pull            # To-Be → .solarch/to-be.json (revizyonuyla)
@@ -100,6 +99,7 @@ CI örneği: [`packages/cli/examples/github-action.yml`](packages/cli/examples/g
 | 3 | MCP sunucusu — 6 araç: bağlam (get_architecture, get_rules), geri besleme (check_drift), iş kuyruğu (get_unimplemented), güvenli mutasyon (create_node_safely, sync_properties) | DONE |
 | 3.5 | VS Code eklentisi — yan sekmede revizyon zaman çizelgesi + update uyarısı + drift listesi, Problems entegrasyonu, status bar, kayıtta tazeleme | DONE |
 | 3.6 | İmplementasyon katmanı — surgical marker okuma (`@solarch:surgical`), `solarch status`, eklentide Implementation bölümü, MCP iş kuyruğu | DONE |
+| 3.7 | Surgical Güvence — sözleşme denetimi (deps/throws), işaret kaybı manifestosu, `status --report` → cloud, canvas rozetleri | DONE |
 
 ## Geliştirme
 

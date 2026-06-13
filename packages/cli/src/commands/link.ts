@@ -4,11 +4,11 @@ import { SolarchApi } from "../api.js";
 import { readProjectConfig, writeProjectConfig } from "../config.js";
 
 export interface LinkOptions {
-  project?: string; // proje id'si — verilmezse listeden seçtir
+  project?: string; // project id — if omitted, pick from list
   rootDir: string;
 }
 
-/** Bulunduğun repo'yu bir Solarch projesine bağlar → solarch.json yazar. */
+/** Link the current repo to a Solarch project → writes solarch.json. */
 export async function linkCommand(opts: LinkOptions): Promise<void> {
   const api = SolarchApi.fromStoredCredentials();
   const projects = await api.listProjects();
@@ -51,5 +51,5 @@ export async function linkCommand(opts: LinkOptions): Promise<void> {
     bindings: existing?.bindings ?? [],
   });
   console.log(pc.green(`Linked to "${chosen.name}". Config written to ${path}`));
-  console.log(`Next: ${pc.cyan("solarch scan")} (local graph) or ${pc.cyan("solarch diff")} (drift check)`);
+  console.log(`Next: ${pc.cyan("solarch scan")} · ${pc.cyan("solarch diff")} · ${pc.cyan("solarch generate")}`);
 }

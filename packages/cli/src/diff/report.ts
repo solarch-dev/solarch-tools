@@ -1,4 +1,4 @@
-/** Drift raporu çıktıları: renkli TTY tablosu, --json, --ci (GitHub annotations). */
+/** Drift report output: colored TTY table, --json, --ci (GitHub annotations). */
 
 import pc from "picocolors";
 import type { DiffResult, DriftFinding, Severity } from "./engine.js";
@@ -48,7 +48,7 @@ export function renderJson(result: DiffResult): string {
   );
 }
 
-/** GitHub Actions annotation formatı — PR diff'inde satır içi görünür. */
+/** GitHub Actions annotation format — visible inline on PR diffs. */
 export function renderCi(result: DiffResult): string {
   const lines: string[] = [];
   for (const f of sorted(result.findings)) {

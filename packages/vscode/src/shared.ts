@@ -82,12 +82,31 @@ export interface SkeletonMember {
   description?: string;
 }
 
+/** Dolu gövdenin sözleşme ihlali (beyan dışı dep/throw). */
+export interface ContractViolation {
+  className: string;
+  member: string;
+  file: string;
+  line: number;
+  messages: string[];
+}
+
+/** Üretilmiş dosyada artık hiç işaret yok — takip kör. */
+export interface MarkerLossInfo {
+  file: string;
+  expected: number;
+}
+
 /** Codegen işaretlerinden türeyen implementasyon panosu. */
 export interface ImplementationState {
   /** İşaretli üye toplamı (0 ise bu repoda scaffold yok — bölüm gizlenir). */
   total: number;
   filled: number;
+  /** İmzaya göre AI'ın doldurduğu üye sayısı. */
+  filledAi: number;
   skeletons: SkeletonMember[];
+  violations: ContractViolation[];
+  lostMarkers: MarkerLossInfo[];
 }
 
 export interface GraphStateOk {

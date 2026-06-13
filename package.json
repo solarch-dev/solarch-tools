@@ -6,7 +6,9 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "install:cli": "bash scripts/install-cli.sh",
+    "publish:packages": "pnpm --filter @solarch/ast-core publish --access public --no-git-checks && pnpm --filter @solarch/cli publish --access public --no-git-checks"
   },
   "engines": {
     "node": ">=20"

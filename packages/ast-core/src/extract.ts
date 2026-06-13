@@ -1,9 +1,9 @@
-/** Sınıf → backend node şemasına en yakın `properties` çıkarımı.
+/** Class → closest backend node schema `properties` extraction.
  *
- *  Her extractor backend'in Zod şemasındaki alan adlarını kullanır
- *  (TableName, Columns, Endpoints, Methods, Fields, ...). Bilinemeyen
- *  alanlar (Description gibi insan girdileri) makul varsayılanla doldurulur —
- *  diff motoru bu alanları "info" seviyesinde karşılaştırır, error üretmez. */
+ *  Each extractor uses field names from the backend Zod schema
+ *  (TableName, Columns, Endpoints, Methods, Fields, ...). Unknown fields
+ *  (human inputs like Description) get sensible defaults — the diff engine
+ *  compares these at "info" level, not as errors. */
 
 import {
   ClassDeclaration,

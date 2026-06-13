@@ -1,12 +1,12 @@
-# Solarch drift check — mimariyi bozan kod merge edilemez.
+# Solarch drift check — code that breaks architecture cannot merge.
 #
-# Kurulum:
-# 1. Solarch app → Settings → API Keys → yeni anahtar üret.
-# 2. Repo Settings → Secrets → SOLARCH_API_KEY olarak ekle.
-# 3. Repo köküne `solarch link` ile solarch.json commit'le.
+# Setup:
+# 1. Solarch app → Settings → API Keys → create a key.
+# 2. Repo Settings → Secrets → add SOLARCH_API_KEY.
+# 3. Commit solarch.json at repo root (via `solarch link`).
 #
-# `solarch diff --ci` GitHub annotation basar; error seviyesinde drift
-# (kural ihlali veya mimaride olup kodda olmayan parça) job'ı kırar.
+# `solarch diff --ci` emits GitHub annotations; error-level drift
+# (rule violation or architecture present but missing in code) fails the job.
 
 name: solarch-drift
 

@@ -1,161 +1,194 @@
 # @solarch/cli
 
-`solarch` komut satırı aracı — kod tabanı (As-Is) ile Solarch'ta çizilen mimari
-(To-Be) arasındaki köprü. Drift bekçisi, çift yönlü senkron ve canlı bağlama
-(live binding) tek binary'de.
+The `solarch` command-line tool — the bridge between your codebase (As-Is) and
+the architecture you draw in Solarch (To-Be). Drift guard, bidirectional sync,
+and live binding in one binary.
 
 ```
-Kod ──scan──▶ As-Is graf ──diff──▶ drift raporu (CI'da merge bloklar)
+Code ──scan──▶ As-Is graph ──diff──▶ drift report (blocks merge in CI)
                   │
-                  └──push──▶ Solarch Cloud (eksik node/edge + property)
-Cloud ──pull──▶ .solarch/to-be.json (offline referans)
-Entity değişti ──watch──▶ DTO'ya otomatik property senkronu (bind)
+                  └──push──▶ Solarch Cloud (missing nodes/edges + properties)
+Cloud ──pull──▶ .solarch/to-be.json (offline reference)
+Entity changed ──watch──▶ auto property sync to DTO (bind)
 ```
 
-## Kurulum ve ilk ayar
+## Install & first run
 
 ```bash
-npm install -g @solarch/cli      # veya monorepo içinde: pnpm build
+npm install -g @solarch/cli
 
-solarch login                    # Solarch app → Settings → API Keys → anahtar üret
-solarch link                     # repo'yu bir Solarch projesine bağla (solarch.json yazar)
+cd your-nestjs-repo
+solarch connect
+
+# Local backend (dev)
+solarch connect --api-url http://localhost:4000/api/v1
 ```
 
-## Komutlar
+**From source** (no npm registry):
+
+```bash
+cd solarch-tools && pnpm install:cli
+```
+
+`connect` prompts for an API key if you are not signed in, and picks a project if
+`solarch.json` is missing. You can also run `solarch login` and `solarch link`
+separately (CI / automation).
+
+## Commands
+
+### `solarch connect`
+
+**Start here** — sign in + link the project in one flow. If already connected,
+prints a status summary.
+
+| Option | Description |
+|---|---|
+| `--api-url <url>` | API server (dev: `http://localhost:4000/api/v1`) |
+| `--key <key>` | API key (CI / non-interactive) |
+| `--project <id>` | Project UUID (skips the picker) |
 
 ### `solarch login`
 
-API anahtarını `~/.solarch/credentials` dosyasına (600 izinli) kaydeder.
+Saves the API key to `~/.solarch/credentials` (mode 600).
 
-| Seçenek | Açıklama |
+| Option | Description |
 |---|---|
-| `--key <key>` | Anahtarı argümanla ver (CI için, interaktif sormaz) |
-| `--api-url <url>` | Varsayılan `https://api.solarch.dev/api/v1` yerine başka sunucu |
+| `--key <key>` | Pass the key on the command line (CI; no prompt) |
+| `--api-url <url>` | Override default `https://api.solarch.dev/api/v1` |
 
 ### `solarch link`
 
-Bulunduğun repo'yu hesabındaki bir Solarch projesine bağlar → `solarch.json`
-yazar. `--project <id>` ile seçim ekranını atlayabilirsin.
+Links the current repo to a Solarch project in your account → writes
+`solarch.json`. Use `--project <id>` to skip the selection screen.
 
 ### `solarch scan`
 
-Kodu derleyici seviyesinde (ts-morph) tarar, As-Is grafı çıkarır ve özet basar.
-`--json` makine-okur tam graf döker.
+Scans the codebase at compiler level (ts-morph), extracts the As-Is graph, and
+prints a summary. `--json` dumps the full graph for machines.
 
 ### `solarch status`
 
-İmplementasyon panosu: kod üretim motorunun bıraktığı `@solarch:surgical`
-işaretlerini okur ve "üretilen iskeletin ne kadarı gerçekten dolduruldu?"
-sorusunu cevaplar — node bazında doluluk + bekleyen üye listesi (iş
-açıklamasıyla).
+Implementation dashboard: reads `@solarch:surgical` markers left by the codegen
+engine and answers “how much of the generated scaffold is actually filled in?” —
+per-node fill rate + pending member list (with job descriptions).
 
 ```
 Implementation status — 12/40 member(s) implemented (30%)
 
   ● AccountsService (Service) 1/5 src/accounts/accounts.service.ts
-      ✗ createAccount :12 — Yeni hesap açar; bakiye sıfırla başlar.
+      ✗ createAccount :12 — Opens a new account; balance starts at zero.
 ```
 
-| Seçenek | Açıklama |
+| Option | Description |
 |---|---|
-| `--ci` | Doldurulmamış üye kaldıysa **exit 1** — "boş gövdeyle release çıkılmaz" kapısı |
-| `--json` | Makine-okur rapor |
+| `--ci` | **Exit 1** if skeletons, contract violations, or marker loss remain |
+| `--report` | Push fill counters to the cloud (feeds canvas badges) |
+| `--json` | Machine-readable report |
+
+Extra checks (Surgical Assurance):
+
+- **Contract violation:** Filled body uses `deps:` / `throws:` outside what the
+  marker declares → reported in red (AST-based, `@solarch/ast-core/surgical`).
+- **Marker loss:** A file listed in `.solarch/generated.json` no longer contains
+  any `@solarch:surgical` → warning (someone deleted the comments; tracking is blind).
 
 ### `solarch diff`
 
-Drift kontrolü: As-Is ↔ To-Be karşılaştırması.
+Drift check: As-Is ↔ To-Be comparison.
 
-| Bulgu | Önem | Anlamı |
+| Finding | Severity | Meaning |
 |---|---|---|
-| `DRIFT_NODE_MISSING_IN_CODE` | error | Mimaride var, kodda yok — taahhüt karşılanmadı |
-| `DRIFT_EDGE_MISSING_IN_CODE` | error | Mimarideki bağlantı kodda kurulmamış |
-| `DRIFT_ILLEGAL_EDGE` | error | Koddaki bağlantı Kurallar Matrisi'ne aykırı (blacklist / whitelist dışı) |
-| `DRIFT_NODE_NOT_IN_CLOUD` | warn | Kodda var, mimaride yok — onaysız genişleme |
-| `DRIFT_EDGE_NOT_IN_CLOUD` | warn | Koddaki bağlantı diyagramda yok |
-| `DRIFT_PROPERTY` | info | Kolon/alan/method listesi farkı |
+| `DRIFT_NODE_MISSING_IN_CODE` | error | In architecture, missing in code — commitment not met |
+| `DRIFT_EDGE_MISSING_IN_CODE` | error | Diagram connection not wired in code |
+| `DRIFT_ILLEGAL_EDGE` | error | Code connection violates the Rules Matrix (blacklist / not whitelisted) |
+| `DRIFT_NODE_NOT_IN_CLOUD` | warn | In code, not in architecture — unapproved expansion |
+| `DRIFT_EDGE_NOT_IN_CLOUD` | warn | Code connection not in the diagram |
+| `DRIFT_PROPERTY` | info | Column/field/method list mismatch |
 
-| Seçenek | Açıklama |
+| Option | Description |
 |---|---|
-| `--ci` | GitHub annotation formatı; **error varsa exit 1** → merge bloklanır |
-| `--json` | Makine-okur rapor |
-| `--to-be <file>` | Offline mod: To-Be grafı API yerine dosyadan oku (örn. `.solarch/to-be.json`) |
+| `--ci` | GitHub annotation format; **exit 1 on errors** → merge blocked |
+| `--json` | Machine-readable report |
+| `--to-be <file>` | Offline: read To-Be graph from file (e.g. `.solarch/to-be.json`) |
 
 ### `solarch pull`
 
-To-Be grafını **revizyon numarasıyla** `.solarch/to-be.json`'a indirir.
-Offline `diff --to-be` için taze yerel kopya + push öncesi referans.
+Downloads the To-Be graph **with revision number** to `.solarch/to-be.json`.
+Fresh local copy for offline `diff --to-be` + reference before push.
 
 ### `solarch push`
 
-Koddaki delta'yı cloud'a yazar. Akış:
+Writes code-side delta to the cloud. Flow:
 
-1. Taze graf çekilir (revizyon **R**) ve plan çıkarılır: eklenecek node'lar,
-   eklenecek edge'ler, güncellenecek liste-property'leri.
-2. Plan gösterilir, onay istenir (`--yes` CI için atlar).
-3. **Ekleme** tek atomik `graph/apply` çağrısıyla gider (`baseRevision: R`).
-   Edge uçları: yeni node'larda `tempId`, mevcut node'larda cloud id.
-4. **Property güncelleme**: liste alanlarında (Columns/Fields/Methods/
-   Endpoints/Values) **kod kaynak kabul edilir** — cloud'un diğer property'leri
-   korunur, yalnız liste alanı kodunkiyle değiştirilip `PATCH` edilir.
-5. Başarıda `idMap` ile `.solarch/map.json` güncellenir — yeni node'lar anında
-   eşleşmiş sayılır; ikinci push **no-op**'tur (idempotans).
+1. Fetch fresh graph (revision **R**) and build a plan: nodes to add, edges to add,
+   list-properties to update.
+2. Show plan, ask for confirmation (`--yes` skips for CI).
+3. **Adds** go in one atomic `graph/apply` call (`baseRevision: R`). Edge endpoints:
+   `tempId` on new nodes, cloud id on existing nodes.
+4. **Property updates:** for list fields (Columns/Fields/Methods/Endpoints/Values)
+   **code is source of truth** — other cloud properties are preserved; only the
+   list field is replaced with code’s version and `PATCH`ed.
+5. On success, `.solarch/map.json` is updated via `idMap` — new nodes are matched
+   immediately; a second push is a **no-op** (idempotent).
 
-Güvenlik kuralları:
+Safety rules:
 
-- **Illegal edge varken push komple reddedilir** (exit 1) — önce kuralı ihlal
-  eden bağlantıyı düzelt ya da canvas'tan onaylat.
-- **Silme yok**: cloud'dan node silmek yalnız canvas'tan yapılır (`--prune` bilinçli olarak yok).
+- **Push is rejected entirely when illegal edges exist** (exit 1) — fix the
+  violating connection or approve it on the canvas first.
+- **No deletes:** removing nodes from the cloud is canvas-only (`--prune` is
+  intentionally absent).
 
-Çatışma çözümü (iki katman):
+Conflict handling (two layers):
 
-| Durum | Ne olur |
+| Situation | What happens |
 |---|---|
-| Graf revizyonu eskidi (`ERR_GRAPH_REVISION_CONFLICT`, 409) | Otomatik: taze graf çekilir, plan yeniden hesaplanır, **bir kez** yeniden denenir. İkinci 409'da kullanıcıya bırakılır. |
-| Node bu arada değişti (`ERR_VERSION_CONFLICT`, 409) | İnteraktif seçim: **cloud'u tut / kodu yaz / atla**. TTY yoksa (CI) otomatik "atla" + rapor. |
+| Graph revision stale (`ERR_GRAPH_REVISION_CONFLICT`, 409) | Automatic: re-fetch graph, recompute plan, **retry once**. Second 409 is left to the user. |
+| Node changed in the meantime (`ERR_VERSION_CONFLICT`, 409) | Interactive: **keep cloud / write code / skip**. No TTY (CI) → auto skip + report. |
 
 ### `solarch generate`
 
-Cloud'daki graftan **deterministik kod iskeletini** üretir ve repoya yazar
-(Constructor — AI'sız, aynı graf → bayt-aynı çıktı). Metot gövdeleri
-`@solarch:surgical` işaretli gelir; sonrası `solarch status` ile takip edilir.
+Produces **deterministic code scaffold** from the cloud graph and writes it into
+the repo (Constructor — no AI, same graph → byte-identical output). Method bodies
+arrive with `@solarch:surgical` markers; track progress with `solarch status`.
 
-| Seçenek | Davranış |
+| Option | Behavior |
 |---|---|
-| (varsayılan) | Yalnız **yeni** dosyalar yazılır — elle/AI ile doldurulmuş kod asla ezilmez |
-| `--force` | Mevcut dosyaların da üzerine yazar (taze iskelete sıfırlama) |
+| (default) | Write **new** files only — hand-filled or AI-filled code is never overwritten |
+| `--force` | Overwrite existing files too (reset to fresh scaffold) |
 
-Build+ plan gerektirir (`402 ERR_PLAN_AI`). Akış: `generate` → `status` →
-(cerrahi AI / insan doldurur) → `diff` ile mimari doğrulama.
+Requires Build+ plan (`402 ERR_PLAN_AI`). Flow: `generate` → `status` →
+(surgical AI / human fills in) → `diff` to validate architecture.
 
-### `solarch bind <kaynak> <hedef>`
+### `solarch bind <source> <target>`
 
-Kalıcı canlı bağ tanımlar (`solarch.json`'a yazar) ve hemen bir kez çalıştırır:
+Defines a persistent live binding (writes to `solarch.json`) and runs it once
+immediately:
 
 ```bash
 solarch bind "src/users/user.entity.ts#User" "src/users/create-user.dto.ts#CreateUserDto"
-solarch bind ... --fields email,name     # yalnız belirli alanlar (varsayılan: all)
+solarch bind ... --fields email,name     # specific fields only (default: all)
 ```
 
-Entity kolonları → DTO property'leri (TS tipi + class-validator dekoratörü).
-Eklenen alanlar `// @solarch:bound` marker'ı taşır; elle yazılmış property'lere
-dokunulmaz, tip çatışmasında üzerine yazılmaz — raporlanır.
+Entity columns → DTO properties (TS type + class-validator decorators). Added
+fields carry a `// @solarch:bound` marker; hand-written properties are untouched;
+type conflicts are not overwritten — they are reported.
 
 ### `solarch watch`
 
-Daemon: chokidar ile dosya değişikliklerini izler; kaynak dosya değişince
-bağlı binding'leri çalıştırır + artımlı drift özeti basar. `--no-drift` yalnız
-binding modu. Ctrl-C ile durur.
+Daemon: watches file changes with chokidar; when a source file changes, runs linked
+bindings + prints an incremental drift summary. `--no-drift` is binding-only mode.
+Stop with Ctrl-C.
 
-## Dosyalar
+## Files
 
-| Dosya | Ne | Commit'lenir mi? |
+| File | Purpose | Commit? |
 |---|---|---|
-| `~/.solarch/credentials` | API anahtarı (makine geneli, 600 izinli) | hayır (home'da) |
-| `solarch.json` | Proje bağı: `projectId`, `include`/`exclude` glob'ları, `bindings[]` | **evet** |
-| `.solarch/map.json` | Kod-node ↔ cloud-node eşleştirme cache'i | isteğe bağlı (önerilir: evet — yeniden adlandırmada eşleşme kararlı kalır) |
-| `.solarch/to-be.json` | `pull` çıktısı: To-Be graf + revizyon | hayır (üretilebilir) |
+| `~/.solarch/credentials` | API key (machine-wide, mode 600) | no (in home dir) |
+| `solarch.json` | Project link: `projectId`, `include`/`exclude` globs, `bindings[]` | **yes** |
+| `.solarch/map.json` | Code-node ↔ cloud-node match cache | optional (recommended: yes — stable matching after renames) |
+| `.solarch/to-be.json` | `pull` output: To-Be graph + revision | no (regenerable) |
 
-`solarch.json` örneği:
+Example `solarch.json`:
 
 ```json
 {
@@ -169,35 +202,34 @@ binding modu. Ctrl-C ile durur.
 }
 ```
 
-## CI entegrasyonu
+## CI integration
 
-Hazır GitHub Actions örneği: [`examples/github-action.yml`](examples/github-action.yml).
-Özet: `solarch login --key "$SOLARCH_API_KEY"` → `solarch diff --ci`. Error
-seviyesinde drift job'ı kırar. İstersen `solarch push --yes` ile main'e merge
-sonrası otomatik senkron da eklenebilir.
+Ready-made GitHub Actions example: [`examples/github-action.yml`](examples/github-action.yml).
+Summary: `solarch login --key "$SOLARCH_API_KEY"` → `solarch diff --ci`. Errors
+fail the job. You can add `solarch push --yes` after merge to main for auto-sync.
 
-## Exit code sözleşmesi
+## Exit codes
 
-| Kod | Anlamı |
+| Code | Meaning |
 |---|---|
-| 0 | Temiz (veya yalnız warn/info bulgular) |
-| 1 | Error seviyesinde drift, illegal edge'li push, çözülemeyen revizyon çatışması, yapılandırma eksiği |
+| 0 | Clean (or warn/info findings only) |
+| 1 | Error-level drift, push with illegal edges, unresolved revision conflict, missing config |
 
-## İç mimari
+## Internal layout
 
 ```
 src/
-├── index.ts          # commander tanımları (binary girişi)
-├── lib.ts            # @solarch/cli/lib — yan etkisiz kütüphane girişi (@solarch/mcp tüketir)
-├── config.ts         # credentials / solarch.json / map.json okuma-yazma
-├── api.ts            # Solarch Cloud istemcisi (Bearer slk_…, zarf açma, ApiError)
+├── index.ts          # commander definitions (binary entry)
+├── lib.ts            # @solarch/cli/lib — side-effect-free library entry (@solarch/mcp consumes this)
+├── config.ts         # credentials / solarch.json / map.json read-write
+├── api.ts            # Solarch Cloud client (Bearer slk_…, envelope unwrap, ApiError)
 ├── commands/         # login, link, scan, diff, pull, push, bind, watch
 ├── diff/
-│   ├── engine.ts     # eşleştirme + drift bulguları + legalite (kurallar cloud'dan)
-│   └── report.ts     # TTY / JSON / GitHub annotation çıktıları
+│   ├── engine.ts     # matching + drift findings + legality (rules from cloud)
+│   └── report.ts     # TTY / JSON / GitHub annotation output
 └── push/
-    └── planner.ts    # diff → apply payload + property merge planı
+    └── planner.ts    # diff → apply payload + property merge plan
 ```
 
-Test: `pnpm test` — diff motoru, push planner'ı ve 409 retry akışı (API mock)
-vitest ile kilitli.
+Tests: `pnpm test` — diff engine, push planner, and 409 retry flow (API mock) locked
+with vitest.

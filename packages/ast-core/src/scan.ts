@@ -1,11 +1,11 @@
-/** Proje tarayıcı — kod tabanından As-Is (mevcut durum) grafiğini çıkarır.
+/** Project scanner — extracts the As-Is (current state) graph from the codebase.
  *
- *  İki geçiş:
- *  1. Node geçişi: her sınıf/enum sınıflandırılır, backend şemasına map edilen
- *     properties çıkarılır, sınıf adı → node kayıt defterine yazılır.
- *  2. Edge geçişi: constructor injection, @Body/dönüş tipleri, @Module imports,
- *     TypeORM entity bağları ve throw ifadelerinden ilişkiler türetilir.
- *     Kayıt defterinde olmayan tipler sessizce atlanır (3. parti sınıflar). */
+ *  Two passes:
+ *  1. Node pass: each class/enum is classified, properties mapped to backend
+ *     schema are extracted, class name → node registry.
+ *  2. Edge pass: relationships derived from constructor injection, @Body/return
+ *     types, @Module imports, TypeORM entity links, and throw expressions.
+ *     Types not in the registry are skipped silently (third-party classes). */
 
 import { existsSync } from "node:fs";
 import { join, relative } from "node:path";

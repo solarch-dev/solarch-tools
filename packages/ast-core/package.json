@@ -1,8 +1,25 @@
 {
   "name": "@solarch/ast-core",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "description": "NestJS AST read/write engine — extracts the As-Is architecture graph and performs safe property injection",
   "type": "module",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/solarch-dev/solarch.git",
+    "directory": "solarch-tools/packages/ast-core"
+  },
+  "homepage": "https://solarch.dev",
+  "keywords": [
+    "solarch",
+    "nestjs",
+    "architecture",
+    "ast",
+    "ts-morph"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -16,8 +33,12 @@
   ],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
+    "prepublishOnly": "pnpm run build",
     "test": "vitest run",
     "lint": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "ts-morph": "^28.0.0"

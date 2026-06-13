@@ -126,15 +126,22 @@ export class StateTreeProvider implements vscode.TreeDataProvider<Item> {
 
     // Implementation bölümü yalnız scaffold'lu repolarda görünür.
     const impl = state.implementation;
-    if (impl.total > 0) {
+    if (impl.total > 0 || impl.lostMarkers.length > 0) {
+      const attention = impl.skeletons.length + impl.violations.length + impl.lostMarkers.length > 0;
       const section = new vscode.TreeItem(
         "Implementation",
-        impl.skeletons.length > 0 ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed,
+        attention ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed,
       );
       (section as Item & { sectionId?: string }).sectionId = "implementation";
-      section.iconPath = new vscode.ThemeIcon("tools");
-      const pct = Math.round((impl.filled / impl.total) * 100);
-      section.description = `${impl.filled}/${impl.total} implemented (${pct}%)`;
+      section.iconPath =
+        impl.violations.length > 0
+          ? new vscode.ThemeIcon("tools", new vscode.ThemeColor("charts.red"))
+          : new vscode.ThemeIcon("tools");
+      const pct = impl.total > 0 ? Math.round((impl.filled / impl.total) * 100) : 0;
+      const parts = [`${impl.filled}/${impl.total} implemented (${pct}%)`];
+      if (impl.filledAi > 0) parts.push(`${impl.filledAi} by AI`);
+      if (impl.violations.length > 0) parts.push(`${impl.violations.length} violation(s)`);
+      section.description = parts.join(" · ");
       items.push(section);
     }
 
@@ -189,44 +196,87 @@ export class StateTreeProvider implements vscode.TreeDataProvider<Item> {
   }
 
   /** Bekleyen bölgeler DOSYA bazında gruplanır — "hangi dosyalarda iş var"
-   *  tek bakışta görünsün. Dosya satırı tıklanınca dosya açılır; altındaki
-   *  üyeler işaretli satıra zıplar. */
+   *  tek bakışta görünsün. İşaret kayıpları en üstte uyarı satırı olarak durur;
+   *  dosya satırının altındaki üyeler işaretli satıra zıplar. */
   private implementationFileItems(state: Extract<GraphState, { ok: true }>): Item[] {
     const impl = state.implementation;
-    if (impl.skeletons.length === 0) return [info("All generated scaffolds are implemented", "check")];
+    const items: Item[] = [];
 
-    const byFile = new Map<string, number>();
-    for (const s of impl.skeletons) byFile.set(s.file, (byFile.get(s.file) ?? 0) + 1);
+    for (const l of impl.lostMarkers) {
+      const item = new vscode.TreeItem(l.file);
+      item.iconPath = new vscode.ThemeIcon("eye-closed", new vscode.ThemeColor("charts.yellow"));
+      item.description = "marker loss — tracking is blind";
+      item.tooltip =
+        `${l.file} was generated with ${l.expected} surgical marker(s), but none remain.\n` +
+        "Someone removed the @solarch:surgical comments — implementation status can no longer be tracked here.\n" +
+        "Restore the markers, or regenerate the file (Overwrite all).";
+      item.command = { command: "solarch.openFinding", title: "Open", arguments: [l.file] };
+      items.push(item);
+    }
 
-    return [...byFile.entries()]
-      .sort((a, b) => b[1] - a[1]) // en çok eksiği olan dosya üstte
-      .map(([file, count]) => {
-        const item = new vscode.TreeItem(file, vscode.TreeItemCollapsibleState.Expanded);
-        (item as Item & { implFile?: string }).implFile = file;
-        item.iconPath = new vscode.ThemeIcon("file-code", new vscode.ThemeColor("charts.orange"));
-        item.description = `${count} to implement`;
-        item.tooltip = `${file} — ${count} NOT_IMPLEMENTED member(s)`;
-        return item;
-      });
+    if (impl.skeletons.length === 0 && impl.violations.length === 0) {
+      if (items.length === 0) return [info("All generated scaffolds are implemented", "check")];
+      return items;
+    }
+
+    const byFile = new Map<string, { skeletons: number; violations: number }>();
+    for (const s of impl.skeletons) {
+      const e = byFile.get(s.file) ?? { skeletons: 0, violations: 0 };
+      e.skeletons += 1;
+      byFile.set(s.file, e);
+    }
+    for (const v of impl.violations) {
+      const e = byFile.get(v.file) ?? { skeletons: 0, violations: 0 };
+      e.violations += 1;
+      byFile.set(v.file, e);
+    }
+
+    items.push(
+      ...[...byFile.entries()]
+        .sort((a, b) => b[1].skeletons + b[1].violations - (a[1].skeletons + a[1].violations))
+        .map(([file, counts]) => {
+          const item = new vscode.TreeItem(file, vscode.TreeItemCollapsibleState.Expanded);
+          (item as Item & { implFile?: string }).implFile = file;
+          item.iconPath = new vscode.ThemeIcon(
+            "file-code",
+            new vscode.ThemeColor(counts.violations > 0 ? "charts.red" : "charts.orange"),
+          );
+          const parts: string[] = [];
+          if (counts.skeletons > 0) parts.push(`${counts.skeletons} to implement`);
+          if (counts.violations > 0) parts.push(`${counts.violations} violation(s)`);
+          item.description = parts.join(" · ");
+          item.tooltip = `${file} — ${parts.join(", ")}`;
+          return item;
+        }),
+    );
+    return items;
   }
 
   private implementationMemberItems(state: Extract<GraphState, { ok: true }>, file: string): Item[] {
-    return state.implementation.skeletons
-      .filter((s) => s.file === file)
-      .map((s) => {
-        const item = new vscode.TreeItem(`${s.className}.${s.member}`);
-        item.iconPath = new vscode.ThemeIcon("circle-large-outline", new vscode.ThemeColor("charts.orange"));
-        item.description = `:${s.line}`;
-        item.tooltip = s.description
-          ? `NOT_IMPLEMENTED — what it should do:\n\n${s.description}`
-          : "NOT_IMPLEMENTED — generated scaffold waiting to be filled in.";
-        item.command = {
-          command: "solarch.openFinding",
-          title: "Open",
-          arguments: [s.file, s.line],
-        };
-        return item;
-      });
+    const impl = state.implementation;
+    const items: Item[] = [];
+
+    for (const s of impl.skeletons.filter((x) => x.file === file)) {
+      const item = new vscode.TreeItem(`${s.className}.${s.member}`);
+      item.iconPath = new vscode.ThemeIcon("circle-large-outline", new vscode.ThemeColor("charts.orange"));
+      item.description = `:${s.line}`;
+      item.tooltip = s.description
+        ? `NOT_IMPLEMENTED — what it should do:\n\n${s.description}`
+        : "NOT_IMPLEMENTED — generated scaffold waiting to be filled in.";
+      item.command = { command: "solarch.openFinding", title: "Open", arguments: [s.file, s.line] };
+      items.push(item);
+    }
+
+    for (const v of impl.violations.filter((x) => x.file === file)) {
+      const item = new vscode.TreeItem(`${v.className}.${v.member}`);
+      item.iconPath = new vscode.ThemeIcon("error", new vscode.ThemeColor("charts.red"));
+      item.description = `contract violation :${v.line}`;
+      item.tooltip = `Contract violation — the filled body breaks its declaration:\n\n${v.messages.map((m) => `• ${m}`).join("\n")}`;
+      item.command = { command: "solarch.openFinding", title: "Open", arguments: [v.file, v.line] };
+      items.push(item);
+    }
+
+    return items;
   }
 }
 

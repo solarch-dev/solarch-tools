@@ -10,14 +10,19 @@ import { nameOfNode, type AsIsGraph, type NodeKind } from "@solarch/ast-core";
 import {
   ApiError,
   SolarchApi,
+  buildImplementationReport,
   diffGraphs,
   evaluateEdge,
+  readGeneratedManifest,
   readMatchCache,
   readProjectConfig,
   runScan,
+  toImplementationEntries,
   writeMatchCache,
   type CloudGraph,
   type DiffResult,
+  type GeneratedManifest,
+  type MatchCache,
   type RuleCatalog,
 } from "@solarch/cli/lib";
 import {
@@ -29,16 +34,20 @@ import {
   type StateNode,
 } from "./shared.js";
 
-/** Codegen işaretlerinden implementasyon panosu çıkar. */
-function buildImplementation(asIs: AsIsGraph): ImplementationState {
+/** Codegen işaretlerinden implementasyon panosu çıkar — sayaçlar, iskeletler,
+ *  sözleşme ihlalleri ve (manifest üzerinden) işaret kayıpları. */
+function buildImplementation(asIs: AsIsGraph, manifest: GeneratedManifest): ImplementationState {
   let total = 0;
   let filled = 0;
+  let filledAi = 0;
   const skeletons: ImplementationState["skeletons"] = [];
+  const violations: ImplementationState["violations"] = [];
   for (const node of asIs.nodes) {
     for (const m of node.surgical ?? []) {
       total += 1;
       if (m.status === "filled") {
         filled += 1;
+        if (m.filledBy === "ai") filledAi += 1;
       } else {
         skeletons.push({
           className: node.name,
@@ -48,9 +57,21 @@ function buildImplementation(asIs: AsIsGraph): ImplementationState {
           description: m.description,
         });
       }
+      if (m.violations && m.violations.length > 0) {
+        violations.push({
+          className: node.name,
+          member: m.member,
+          file: node.file,
+          line: m.line,
+          messages: m.violations,
+        });
+      }
     }
   }
-  return { total, filled, skeletons };
+  // İşaret kaybı tespiti CLI motoruyla aynı kuraldan (tek kaynak).
+  const report = buildImplementationReport(asIs, manifest);
+  const lostMarkers = report.lostMarkers.map((l) => ({ file: l.file, expected: l.expected }));
+  return { total, filled, filledAi, skeletons, violations, lostMarkers };
 }
 
 /* ── saf birleştirme ─────────────────────────────────────────────── */
@@ -63,6 +84,7 @@ export function buildGraphState(
   cloud: CloudGraph,
   rules: RuleCatalog | null,
   diff: DiffResult,
+  manifest: GeneratedManifest = {},
 ): GraphStateOk {
   const codeKeyToCloudId = new Map(Object.entries(diff.cache));
   const cloudIdToCodeKey = new Map([...codeKeyToCloudId].map(([k, v]) => [v, k]));
@@ -149,7 +171,7 @@ export function buildGraphState(
       suggestion: f.suggestion,
     })),
     counts: diff.counts,
-    implementation: buildImplementation(asIs),
+    implementation: buildImplementation(asIs, manifest),
     generatedAt: new Date().toISOString(),
   };
 }
@@ -157,11 +179,14 @@ export function buildGraphState(
 /* ── kabuk: cache'li yenileme döngüsü ────────────────────────────── */
 
 const CLOUD_TTL_MS = 60_000;
+const REPORT_THROTTLE_MS = 60_000;
 
 export class StateEngine {
   private cloud: CloudGraph | null = null;
   private rules: RuleCatalog | null = null;
   private cloudFetchedAt = 0;
+  private lastReportSignature = "";
+  private lastReportAt = 0;
 
   constructor(private readonly rootDir: string) {}
 
@@ -222,6 +247,30 @@ export class StateEngine {
 
     const diff = diffGraphs(asIs, this.cloud, this.rules, readMatchCache(this.rootDir));
     writeMatchCache(this.rootDir, diff.cache);
-    return buildGraphState(asIs, this.cloud, this.rules, diff);
+    const state = buildGraphState(asIs, this.cloud, this.rules, diff, readGeneratedManifest(this.rootDir));
+
+    // Doluluk sayaçlarını cloud'a sessizce raporla — canvas rozetleri beslenir.
+    void this.maybeReport(api, config.projectId, asIs, diff.cache);
+    return state;
+  }
+
+  /** Otomatik implementasyon raporu: değişiklik varsa + 60sn throttle.
+   *  Başarısızlık yutulur — rapor bir konfor özelliğidir, UI'ı asla bozmaz. */
+  private async maybeReport(api: SolarchApi, projectId: string, asIs: AsIsGraph, cache: MatchCache): Promise<void> {
+    try {
+      const entries = toImplementationEntries(
+        buildImplementationReport(asIs, readGeneratedManifest(this.rootDir)),
+        cache,
+      );
+      if (entries.length === 0) return;
+      const signature = JSON.stringify(entries);
+      if (signature === this.lastReportSignature) return;
+      if (Date.now() - this.lastReportAt < REPORT_THROTTLE_MS) return;
+      await api.reportImplementation(projectId, entries);
+      this.lastReportSignature = signature;
+      this.lastReportAt = Date.now();
+    } catch {
+      // sessiz — bir sonraki refresh yeniden dener
+    }
   }
 }

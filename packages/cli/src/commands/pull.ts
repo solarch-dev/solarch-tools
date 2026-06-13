@@ -12,8 +12,8 @@ export function toBePath(rootDir: string): string {
   return join(resolve(rootDir), ".solarch", "to-be.json");
 }
 
-/** To-Be grafını revizyonuyla diske indir — offline `diff --to-be` için taze
- *  yerel kopya + push öncesi referans. */
+/** Download To-Be graph with revision to disk — fresh local copy for offline
+ *  `diff --to-be` + reference before push. */
 export async function pullCommand(opts: PullOptions): Promise<CloudGraph | null> {
   const config = readProjectConfig(opts.rootDir);
   if (!config?.projectId) {

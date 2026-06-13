@@ -1,7 +1,7 @@
-/** CLI yapılandırması — iki katman:
- *  1. Kimlik: ~/.solarch/credentials (600 izinli JSON) — API anahtarı makine geneli.
- *  2. Proje bağı: <repo>/solarch.json — projectId + tarama ayarları + binding'ler.
- *     Eşleştirme cache'i <repo>/.solarch/map.json (gitignore'lanabilir). */
+/** CLI configuration — two layers:
+ *  1. Identity: ~/.solarch/credentials (mode 600 JSON) — machine-wide API key.
+ *  2. Project link: <repo>/solarch.json — projectId + scan settings + bindings.
+ *     Match cache: <repo>/.solarch/map.json (may be gitignored). */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 
 export const DEFAULT_API_URL = "https://api.solarch.dev/api/v1";
 
-/* ── kimlik (~/.solarch/credentials) ─────────────────────────────── */
+/* ── identity (~/.solarch/credentials) ───────────────────────────── */
 
 export interface Credentials {
   apiUrl: string;
@@ -113,4 +113,34 @@ export function writeMatchCache(rootDir: string, cache: MatchCache): void {
   const p = mapCachePath(rootDir);
   mkdirSync(dirname(p), { recursive: true });
   writeFileSync(p, JSON.stringify(cache, null, 2) + "\n");
+}
+
+/* ── üretim manifestosu (.solarch/generated.json) ────────────────── */
+
+/** generate'in yazdığı işaretli dosyaların kaydı — işaret kaybı tespiti için.
+ *  Dosya yolu → { nodeId?, markers }. Yalnız marker taşıyan dosyalar girer. */
+export interface GeneratedManifest {
+  [file: string]: { nodeId?: string; markers: number };
+}
+
+function manifestPath(rootDir: string): string {
+  return join(resolve(rootDir), ".solarch", "generated.json");
+}
+
+export function readGeneratedManifest(rootDir: string): GeneratedManifest {
+  const p = manifestPath(rootDir);
+  if (!existsSync(p)) return {};
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) as GeneratedManifest;
+  } catch {
+    return {};
+  }
+}
+
+/** Merge ile yazar — önceki üretimlerin kayıtları korunur, aynı dosya güncellenir. */
+export function mergeGeneratedManifest(rootDir: string, entries: GeneratedManifest): void {
+  const merged = { ...readGeneratedManifest(rootDir), ...entries };
+  const p = manifestPath(rootDir);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(merged, null, 2) + "\n");
 }

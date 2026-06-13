@@ -6,13 +6,13 @@ export interface BindOptions {
   rootDir: string;
   source: string;
   target: string;
-  /** Virgülle ayrılmış alan listesi; verilmezse "all". */
+  /** Comma-separated field list; defaults to "all". */
   fields?: string;
 }
 
-/** Kalıcı bağ tanımla (solarch.json'a yaz) + ilk senkronu hemen çalıştır. */
+/** Define a persistent binding (writes solarch.json) + run first sync immediately. */
 export function bindCommand(opts: BindOptions): void {
-  // Ref formatını erkenden doğrula — hata yarıda kesilen config yazımından iyi.
+  // Validate ref format early — better than half-written config on error.
   parseBindingRef(opts.source);
   parseBindingRef(opts.target);
 
@@ -38,7 +38,7 @@ export function bindCommand(opts: BindOptions): void {
   writeProjectConfig(opts.rootDir, config);
   console.log(pc.green(`Binding saved: ${opts.source} → ${opts.target}`));
 
-  // İlk senkron — bağ kurulur kurulmaz hedef güncel olsun.
+  // First sync — target should be up to date as soon as the binding exists.
   const outcome = runBinding(opts.rootDir, opts.source, opts.target, fields);
   report(outcome.targetFile, outcome);
 }

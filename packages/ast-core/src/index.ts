@@ -4,6 +4,7 @@ export { scanProject, type ScanOptions } from "./scan.js";
 export {
   readSurgicalMembers,
   summarizeSurgical,
+  type FilledBy,
   type SurgicalMember,
   type SurgicalStatus,
   type SurgicalSummary,

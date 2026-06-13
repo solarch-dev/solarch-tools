@@ -10,19 +10,19 @@ import { runScan } from "./scan.js";
 
 export interface WatchOptions {
   rootDir: string;
-  /** Drift özetini kapat — yalnız live binding çalışsın. */
+  /** Disable drift summary — live binding only. */
   noDrift?: boolean;
 }
 
 const DEBOUNCE_MS = 400;
 
-/** Watcher daemon: dosya değişti → (1) kaynağı binding'lerde ara, hedefe senkron;
- *  (2) artımlı yeniden tarama + drift özeti. Ctrl-C ile durur. */
+/** Watcher daemon: file changed → (1) find source in bindings, sync target;
+ *  (2) incremental rescan + drift summary. Stop with Ctrl-C. */
 export async function watchCommand(opts: WatchOptions): Promise<void> {
   const rootDir = resolve(opts.rootDir);
   const config = readProjectConfig(rootDir);
 
-  // To-Be graf + kurallar bir kez çekilir (daemon ömrü boyunca referans).
+  // Fetch To-Be graph + rules once (reference for daemon lifetime).
   let toBe: CloudGraph | null = null;
   let rules: RuleCatalog | null = null;
   if (!opts.noDrift && config?.projectId) {
@@ -41,7 +41,7 @@ export async function watchCommand(opts: WatchOptions): Promise<void> {
       pc.dim(` — ${bindings.length} binding(s), drift ${toBe ? "on" : "off"}. Ctrl-C to stop.`),
   );
 
-  /** Değişen kaynak dosyalara bağlı binding'leri çalıştır. */
+  /** Run bindings tied to changed source files. */
   const syncBindingsFor = (changedRel: string): void => {
     for (const b of bindings) {
       const sourceFile = b.source.split("#")[0];
@@ -101,7 +101,7 @@ export async function watchCommand(opts: WatchOptions): Promise<void> {
   watcher.on("change", onChange);
   watcher.on("add", onChange);
 
-  // İlk durum: açılışta bir kez drift bas.
+  // Initial state: print drift once on startup.
   runDrift();
 
   await new Promise<void>((resolveWait) => {

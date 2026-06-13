@@ -15,8 +15,17 @@ writeFileSync(
   join(dir, "src", "accounts.service.ts"),
   `import { Injectable } from "@nestjs/common";
 
+class DuplicateAccountException extends Error {}
+class UnknownBillingException extends Error {}
+
 @Injectable()
 export class AccountsService {
+  constructor(
+    private readonly accountsRepository: { save(): Promise<void> },
+    private readonly auditService: { log(): void },
+    private readonly mailService: { send(): void },
+  ) {}
+
   /** Doldurulmamış iskelet — codegen çıktısı olduğu gibi duruyor. */
   async createAccount(): Promise<void> {
     // @solarch:surgical id=11111111-aaaa-bbbb-cccc-000000000001#createAccount
@@ -27,17 +36,33 @@ export class AccountsService {
     throw new Error("NOT_IMPLEMENTED: AccountsService.createAccount");
   }
 
-  /** Cerrahi AI doldurmuş — işaret duruyor ama gövde gerçek kod. */
+  /** Cerrahi AI doldurmuş — imzalı, sözleşmeye uygun. */
   async closeAccount(): Promise<boolean> {
     // @solarch:surgical id=11111111-aaaa-bbbb-cccc-000000000001#closeAccount
-    const ok = await Promise.resolve(true);
-    return ok;
+    // throws: DuplicateAccountException
+    // deps: accountsRepository
+    // @solarch:filled by=ai at=2026-06-13T01:00:00Z
+    await this.accountsRepository.save();
+    this.validate();
+    if (!this.accountsRepository) throw new DuplicateAccountException();
+    return true;
+  }
+
+  /** İnsan doldurmuş (imzasız) — beyan dışı dep + beyan dışı throw kullanıyor. */
+  async suspendAccount(): Promise<void> {
+    // @solarch:surgical id=11111111-aaaa-bbbb-cccc-000000000001#suspendAccount
+    // throws: DuplicateAccountException
+    // deps: accountsRepository
+    this.mailService.send();
+    throw new UnknownBillingException();
   }
 
   /** İşaretsiz, elle yazılmış metot — surgical listesine girmez. */
   helper(): number {
     return 42;
   }
+
+  private validate(): void {}
 }
 `,
 );
@@ -45,17 +70,17 @@ export class AccountsService {
 describe("surgical marker extraction", () => {
   const graph = scanProject({ rootDir: dir });
   const svc = graph.nodes.find((n) => n.name === "AccountsService");
+  const byMember = new Map(svc!.surgical!.map((m) => [m.member, m]));
 
   it("işaretli üyeleri durumlarıyla çıkarır, işaretsizi atlar", () => {
-    expect(svc?.surgical).toHaveLength(2);
-    const byMember = new Map(svc!.surgical!.map((m) => [m.member, m]));
+    expect(svc?.surgical).toHaveLength(3);
     expect(byMember.get("createAccount")?.status).toBe("skeleton");
     expect(byMember.get("closeAccount")?.status).toBe("filled");
     expect(byMember.has("helper")).toBe(false);
   });
 
   it("nodeId, açıklama, throws ve deps metadata'sını okur", () => {
-    const m = svc!.surgical!.find((x) => x.member === "createAccount")!;
+    const m = byMember.get("createAccount")!;
     expect(m.nodeId).toBe("11111111-aaaa-bbbb-cccc-000000000001");
     expect(m.description).toBe("Yeni hesap açar; bakiye sıfırla başlar.\nLimit aşımında reddeder.");
     expect(m.throws).toEqual(["AccountLimitExceededException", "DuplicateAccountException"]);
@@ -63,21 +88,27 @@ describe("surgical marker extraction", () => {
     expect(m.line).toBeGreaterThan(0);
   });
 
-  it("dolu gövdede metadata olmadan da işaret tanınır", () => {
-    const m = svc!.surgical!.find((x) => x.member === "closeAccount")!;
-    expect(m.description).toBeUndefined();
-    expect(m.throws).toBeUndefined();
+  it("imzayı okur: damgalı = ai, damgasız dolu = human", () => {
+    expect(byMember.get("closeAccount")?.filledBy).toBe("ai");
+    expect(byMember.get("closeAccount")?.filledAt).toBe("2026-06-13T01:00:00Z");
+    expect(byMember.get("suspendAccount")?.filledBy).toBe("human");
+    expect(byMember.get("createAccount")?.filledBy).toBeUndefined(); // iskelette imza olmaz
+  });
+
+  it("sözleşmeye uyan dolu gövdede ihlal üretmez (kendi yardımcıları serbest)", () => {
+    // closeAccount: beyan edilen dep + beyan edilen throw + this.validate() (kendi metodu).
+    expect(byMember.get("closeAccount")?.violations).toBeUndefined();
+  });
+
+  it("beyan dışı dep ve throw ihlal olarak raporlanır", () => {
+    const v = byMember.get("suspendAccount")?.violations ?? [];
+    expect(v).toHaveLength(2);
+    expect(v.some((x) => x.includes('this.mailService'))).toBe(true);
+    expect(v.some((x) => x.includes("UnknownBillingException"))).toBe(true);
   });
 
   it("özet sayaçları doğru toplar", () => {
     const summary = summarizeSurgical(svc!.surgical!);
-    expect(summary).toEqual({ total: 2, filled: 1, skeletons: 1 });
-  });
-
-  it("işaretsiz sınıflarda surgical alanı hiç yazılmaz", () => {
-    // fixture'sız sınıf: bu dosyada yalnız AccountsService var; mevcut
-    // basic-app fixture'ı ayrı testte taranıyor — burada negatif durumu
-    // aynı grafın işaretsiz node'u olmadığından şemayla doğruluyoruz.
-    expect(svc && "surgical" in svc).toBe(true);
+    expect(summary).toEqual({ total: 3, filled: 2, skeletons: 1, filledAi: 1, violations: 1 });
   });
 });

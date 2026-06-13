@@ -1,5 +1,5 @@
-/** Solarch Cloud API istemcisi — backend'in `{ success, data }` zarfını açar.
- *  Kimlik: Authorization: Bearer slk_... (API anahtarı). */
+/** Solarch Cloud API client — unwraps backend `{ success, data }` envelope.
+ *  Auth: Authorization: Bearer slk_... (API key). */
 
 import type { EdgeKind, NodeKind } from "@solarch/ast-core";
 import { readCredentials, type Credentials } from "./config.js";
@@ -9,7 +9,7 @@ export class ApiError extends Error {
     message: string,
     readonly code: string,
     readonly status: number,
-    /** Hata zarfındaki ek alanlar (örn. currentRevision, currentVersion). */
+    /** Extra fields from error envelope (e.g. currentRevision, currentVersion). */
     readonly details: Record<string, unknown> = {},
   ) {
     super(message);
@@ -25,6 +25,10 @@ export interface CloudNode {
   /** Optimistic locking — PATCH expectedVersion bu değerle gider. */
   version: number;
   properties: Record<string, unknown>;
+  /** İmplementasyon sayaçları (status --report / eklenti yazdıysa). */
+  implTotal?: number;
+  implFilled?: number;
+  implAi?: number;
 }
 
 export interface CloudEdge {
@@ -78,6 +82,17 @@ export interface ApplyViolation {
 export type ApplyResult =
   | { success: true; idMap: Record<string, string>; nodeCount: number; edgeCount: number; graphRevision: number }
   | { success: false; transactionStatus: "ROLLED_BACK"; message: string; violations: ApplyViolation[] };
+
+/* ── implementasyon raporu (Faz B — canvas doluluk rozetleri) ── */
+
+export interface ImplementationEntry {
+  nodeId: string;
+  /** İşaretli üye toplamı. */
+  total: number;
+  filled: number;
+  /** İmzaya göre AI'ın doldurduğu üye sayısı. */
+  filledAi: number;
+}
 
 /* ── codegen (Constructor) ── */
 
@@ -190,6 +205,15 @@ export class SolarchApi {
     return this.request<ApplyResult>(`/projects/${projectId}/graph/apply`, {
       method: "POST",
       body: JSON.stringify(payload),
+    });
+  }
+
+  /** İmplementasyon sayaçlarını cloud'a yaz — canvas doluluk rozetleri.
+   *  Yapısal mutasyon DEĞİL: graphRevision'ı bump etmez. */
+  reportImplementation(projectId: string, entries: ImplementationEntry[]): Promise<{ updated: number }> {
+    return this.request<{ updated: number }>(`/projects/${projectId}/implementation`, {
+      method: "PUT",
+      body: JSON.stringify({ entries }),
     });
   }
 

@@ -236,23 +236,37 @@ export interface UnimplementedRegion {
   deps?: string[];
 }
 
+export interface ContractViolationReport {
+  className: string;
+  member: string;
+  file: string;
+  line: number;
+  messages: string[];
+}
+
 export interface UnimplementedReport {
   totalMarked: number;
   implemented: number;
   remaining: UnimplementedRegion[];
+  /** Dolu ama sözleşmeye aykırı bölgeler — ajan bunları da düzeltmeli. */
+  violations: ContractViolationReport[];
   guidance: string;
 }
 
 /** Cerrahi AI'ın iş kuyruğu: doldurulmamış işaretli bölgeleri talimatlarıyla
- *  döndürür. Ajan akışı: get_unimplemented → bölgeyi doldur → check_drift.
- *  Tamamen lokal çalışır (API gerekmez) — rootDir yeter. */
+ *  döndürür. Ajan akışı: get_unimplemented → bölgeyi doldur (imza bırak) →
+ *  check_drift. Tamamen lokal çalışır (API gerekmez) — rootDir yeter. */
 export function getUnimplemented(rootDir: string): UnimplementedReport {
   const asIs = runScan(rootDir);
   let totalMarked = 0;
   const remaining: UnimplementedRegion[] = [];
+  const violations: ContractViolationReport[] = [];
   for (const node of asIs.nodes) {
     for (const m of node.surgical ?? []) {
       totalMarked += 1;
+      if (m.violations && m.violations.length > 0) {
+        violations.push({ className: node.name, member: m.member, file: node.file, line: m.line, messages: m.violations });
+      }
       if (m.status !== "skeleton") continue;
       remaining.push({
         nodeId: m.nodeId,
@@ -266,16 +280,27 @@ export function getUnimplemented(rootDir: string): UnimplementedReport {
       });
     }
   }
+
+  const fillRules =
+    "Fill ONLY the marked method bodies (replace the NOT_IMPLEMENTED throw). Keep the @solarch:surgical " +
+    "marker comment intact, honor the description, throw only the listed exceptions, and use only the " +
+    "listed deps. When you fill a body, add this signature line right after the marker comments: " +
+    "`// @solarch:filled by=ai at=<current ISO timestamp>`. After filling, run check_drift to verify " +
+    "you did not break the architecture.";
+
   return {
     totalMarked,
     implemented: totalMarked - remaining.length,
     remaining,
+    violations,
     guidance:
-      remaining.length === 0
-        ? "All surgical regions are implemented. Nothing to fill."
-        : "Fill ONLY the marked method bodies (replace the NOT_IMPLEMENTED throw). Keep the @solarch:surgical " +
-          "marker comment intact, honor the description, throw only the listed exceptions, and use only the " +
-          "listed deps. After filling, run check_drift to verify you did not break the architecture.",
+      remaining.length === 0 && violations.length === 0
+        ? "All surgical regions are implemented and within contract. Nothing to do."
+        : violations.length > 0
+          ? `FIX THE CONTRACT VIOLATIONS FIRST: a filled body uses dependencies or throws exceptions that were ` +
+            `not declared in its marker. Either fix the body, or (if the new dep/throw is genuinely needed) ` +
+            `update the architecture first. Then: ${fillRules}`
+          : fillRules,
   };
 }
 

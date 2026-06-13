@@ -1,6 +1,6 @@
-/** Solarch graf taksonomisi — backend'in `nodes/schemas` + `edges/schemas`
- *  tanımlarının birebir aynası. CLI/MCP bu tiplere göre konuşur; yeni format
- *  icat edilmez, cloud'un şemasına map edilir. */
+/** Solarch graph taxonomy — mirror of backend `nodes/schemas` + `edges/schemas`
+ *  definitions. CLI/MCP speak these types; no new format is invented, everything
+ *  maps to the cloud schema. */
 
 export const NODE_KINDS = [
   "Table", "DTO", "Model", "Enum", "View",

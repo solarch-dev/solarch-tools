@@ -10,19 +10,19 @@ export interface DiffOptions {
   rootDir: string;
   json?: boolean;
   ci?: boolean;
-  /** Offline mod: To-Be grafiği API yerine dosyadan oku. */
+  /** Offline mode: read To-Be graph from file instead of API. */
   toBe?: string;
 }
 
 export async function diffCommand(opts: DiffOptions): Promise<void> {
-  // 1. To-Be (olması gereken) graf — cloud veya dosya.
+  // 1. To-Be (expected) graph — cloud or file.
   let toBe: CloudGraph;
   let rules: RuleCatalog | null = null;
 
   if (opts.toBe) {
     const raw = JSON.parse(readFileSync(opts.toBe, "utf8")) as CloudGraph | { data: CloudGraph };
     toBe = "nodes" in raw ? raw : raw.data;
-    // Offline'da da kural kataloğunu dene — login varsa legalite kontrolü çalışır.
+    // Offline: still try rules catalog — legality checks run when logged in.
     try {
       rules = await SolarchApi.fromStoredCredentials().getRules();
     } catch {
@@ -39,15 +39,15 @@ export async function diffCommand(opts: DiffOptions): Promise<void> {
     [toBe, rules] = await Promise.all([api.getGraph(config.projectId), api.getRules()]);
   }
 
-  // 2. As-Is graf — lokal kod.
+  // 2. As-Is graph — local code.
   const asIs = runScan(opts.rootDir);
 
-  // 3. Diff + eşleştirme cache'i güncelle.
+  // 3. Diff + update match cache.
   const cache = readMatchCache(opts.rootDir);
   const result = diffGraphs(asIs, toBe, rules, cache);
   writeMatchCache(opts.rootDir, result.cache);
 
-  // 4. Çıktı + exit code (error varsa 1 → CI merge'i bloklar).
+  // 4. Output + exit code (errors → 1 → CI blocks merge).
   if (opts.json) console.log(renderJson(result));
   else if (opts.ci) console.log(renderCi(result));
   else console.log(renderTty(result));

@@ -1,9 +1,9 @@
-/** @solarch/cli/lib — yan etkisiz kütüphane girişi.
+/** @solarch/cli/lib — side-effect-free library entry.
  *
- *  `dist/index.js` commander binary'sidir (import edilince parse çalışır);
- *  bu giriş ise motorları dışarı açar. Tüketici: `@solarch/mcp` —
- *  MCP araçları aynı API istemcisini, diff motorunu ve push planner'ını
- *  CLI ile birebir paylaşır (tek kaynak, davranış sapması yok). */
+ *  `dist/index.js` is the commander binary (import triggers parse);
+ *  this entry exposes the engines. Consumer: `@solarch/mcp` —
+ *  MCP tools share the same API client, diff engine, and push planner as the
+ *  CLI (single source, no behavior drift). */
 
 export {
   ApiError,
@@ -18,6 +18,7 @@ export {
   type CloudNode,
   type GeneratedFile,
   type GeneratedProject,
+  type ImplementationEntry,
   type ProjectSummary,
   type RuleCatalog,
 } from "./api.js";
@@ -26,13 +27,16 @@ export { writeGeneratedFiles, type WriteResult } from "./commands/generate.js";
 
 export {
   DEFAULT_API_URL,
+  mergeGeneratedManifest,
   readCredentials,
+  readGeneratedManifest,
   readMatchCache,
   readProjectConfig,
   writeCredentials,
   writeMatchCache,
   writeProjectConfig,
   type Credentials,
+  type GeneratedManifest,
   type MatchCache,
   type ProjectConfig,
 } from "./config.js";
@@ -60,6 +64,8 @@ export { runScan } from "./commands/scan.js";
 
 export {
   buildImplementationReport,
+  toImplementationEntries,
   type ImplementationReport,
+  type MarkerLoss,
   type NodeImplementation,
 } from "./commands/status.js";

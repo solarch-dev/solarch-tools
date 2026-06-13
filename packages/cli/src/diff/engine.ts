@@ -1,16 +1,15 @@
-/** Graph diff (drift) motoru — As-Is (koddan taranan) ile To-Be (Solarch Cloud)
- *  grafiğini karşılaştırır.
+/** Graph diff (drift) engine — compares As-Is (scanned from code) with To-Be
+ *  (Solarch Cloud) graph.
  *
- *  Eşleştirme: AST tarafında UUID olmadığından node'lar `(kind, kanonik isim)`
- *  anahtarıyla eşleşir; eşleşmeler map.json cache'ine yazılır ki cloud'da yeniden
- *  adlandırma yapılana dek kararlı kalsın (cache'teki cloud id hâlâ yaşıyorsa
- *  isim değişse bile eşleşme korunur).
+ *  Matching: no UUID on AST side, so nodes match on `(kind, canonical name)`;
+ *  matches are written to map.json cache so they stay stable until cloud rename
+ *  (if cached cloud id still lives, match survives name change).
  *
- *  Önem dereceleri (plan sözleşmesi):
- *  - error: kural ihlali (blacklist / whitelist dışı edge) VE cloud'da olup
- *    kodda olmayan node/edge (mimari taahhüdü kod karşılamıyor).
- *  - warn: kodda olup cloud'da olmayan node/edge (onaysız genişleme).
- *  - info: property seviyesi farklar (kolon/alan).  */
+ *  Severity levels:
+ *  - error: rule violation (blacklist / non-whitelisted edge) AND in cloud but
+ *    missing in code (architecture commitment not met).
+ *  - warn: in code but not in cloud (unapproved expansion).
+ *  - info: property-level diffs (columns/fields).  */
 
 import {
   nameOfNode,

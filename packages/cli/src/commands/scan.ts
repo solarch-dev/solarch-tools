@@ -7,7 +7,7 @@ export interface ScanOptions {
   json?: boolean;
 }
 
-/** solarch.json varsa include/exclude oradan; yoksa varsayılanlarla tara. */
+/** Uses include/exclude from solarch.json when present; otherwise defaults. */
 export function runScan(rootDir: string): AsIsGraph {
   const config = readProjectConfig(rootDir);
   return scanProject({

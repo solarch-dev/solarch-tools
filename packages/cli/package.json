@@ -1,8 +1,26 @@
 {
   "name": "@solarch/cli",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "description": "Solarch CLI — architecture drift check, live binding and cloud sync for NestJS codebases",
   "type": "module",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/solarch-dev/solarch.git",
+    "directory": "solarch-tools/packages/cli"
+  },
+  "homepage": "https://solarch.dev",
+  "keywords": [
+    "solarch",
+    "nestjs",
+    "architecture",
+    "drift",
+    "cli",
+    "mcp"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "solarch": "./dist/index.js"
   },
@@ -15,13 +33,19 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/lib.ts --format esm --dts --clean",
+    "generate:logo": "node scripts/generate-logo-ascii.mjs",
+    "build": "pnpm run generate:logo && tsup src/index.ts src/lib.ts --format esm --dts --clean",
     "dev": "tsx src/index.ts",
+    "prepublishOnly": "pnpm run build",
     "test": "vitest run",
     "lint": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@solarch/ast-core": "workspace:*",
@@ -30,6 +54,7 @@
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
+    "@ascii-kit/svg": "^0.0.6",
     "@types/node": "^25.9.3",
     "tsup": "^8.5.1",
     "tsx": "^4.22.4",

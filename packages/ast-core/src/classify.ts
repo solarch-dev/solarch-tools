@@ -1,14 +1,14 @@
-/** Sınıf → mimari rol sınıflandırıcısı.
+/** Class → architecture role classifier.
  *
- *  Karar dosya adından DEĞİL, AST'den verilir: dekoratörler (@Controller,
- *  @Injectable, @Entity, @Module), heritage (extends/implements) ve son çare
- *  olarak isim sözleşmeleri. Regex/metin taraması yok — derleyicinin gördüğü
- *  yapı neyse rol odur (deterministik). */
+ *  Decision comes from AST, NOT file names: decorators (@Controller,
+ *  @Injectable, @Entity, @Module), heritage (extends/implements), and as a last
+ *  resort naming conventions. No regex/text scanning — whatever structure the
+ *  compiler sees is the role (deterministic). */
 
 import { ClassDeclaration } from "ts-morph";
 import type { NodeKind } from "./types.js";
 
-/** class-validator dekoratörleri — bir property'de bunlardan biri varsa sınıf DTO adayıdır. */
+/** class-validator decorators — if a property has one, the class is a DTO candidate. */
 const CLASS_VALIDATOR_DECORATORS = new Set([
   "IsString", "IsNumber", "IsInt", "IsBoolean", "IsDate", "IsEmail", "IsUrl",
   "IsUUID", "IsEnum", "IsArray", "IsObject", "IsOptional", "IsNotEmpty",

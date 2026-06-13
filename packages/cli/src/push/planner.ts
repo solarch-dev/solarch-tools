@@ -1,14 +1,13 @@
-/** Push planlayıcısı — As-Is (kod) ile To-Be (cloud) arasındaki delta'yı
- *  `graph/apply` payload'ına ve property PATCH listesine çevirir.
+/** Push planner — turns delta between As-Is (code) and To-Be (cloud) into
+ *  `graph/apply` payload and property PATCH list.
  *
- *  Sözleşme (Faz 2 planı):
- *  - Eklenecekler: cloud'da olmayan node'lar + cloud'da olmayan edge'ler.
- *    Edge uçları: yeni node'larda tempId, eşleşen node'larda cloud id.
- *  - Illegal edge'ler (Rules Engine reddi) ASLA pushlanmaz — plana ayrı listede
- *    girer, çağıran error basıp exit 1 yapar.
- *  - Property güncellemeleri: eşleşen node'larda liste-alanlarında kod kaynak
- *    kabul edilir — cloud properties korunur, yalnız liste alanı kodunkiyle
- *    değiştirilir; PATCH expectedVersion ile gider. */
+ *  Contract:
+ *  - Adds: nodes not in cloud + edges not in cloud.
+ *    Edge endpoints: tempId on new nodes, cloud id on matched nodes.
+ *  - Illegal edges (Rules Engine rejection) are NEVER pushed — separate list in
+ *    plan; caller prints error and exit 1.
+ *  - Property updates: on matched nodes, code wins on list fields — cloud
+ *    properties preserved, only list field replaced; PATCH with expectedVersion. */
 
 import {
   nameOfNode,

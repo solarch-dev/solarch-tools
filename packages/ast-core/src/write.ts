@@ -1,12 +1,12 @@
-/** Güvenli AST yazma — live binding'in çekirdeği.
+/** Safe AST writes — core of live binding.
  *
- *  Kaynak sınıftan (Entity/DTO) property'leri çıkarıp hedef sınıfa enjekte eder.
- *  Sözleşme:
- *  - YALNIZ property bildirimleri eklenir; metodlara/iş mantığına dokunulmaz.
- *  - Eklenen her property `@solarch:bound` marker yorumu taşır — sonraki
- *    senkronlarda "bizim eklediğimiz" ile "kullanıcının yazdığı" ayrılır.
- *  - Hedefte aynı isimli property zaten varsa: tip uyuşuyorsa atlanır,
- *    uyuşmuyorsa ÜZERİNE YAZILMAZ — çatışma raporlanır. */
+ *  Extracts properties from a source class (Entity/DTO) and injects into target.
+ *  Contract:
+ *  - ONLY property declarations are added; methods/business logic are untouched.
+ *  - Every added property carries an `@solarch:bound` marker comment — later
+ *    syncs distinguish “ours” from “user-written”.
+ *  - If target already has a property with the same name: skip when types match;
+ *    do NOT overwrite on mismatch — conflict is reported. */
 
 import { ClassDeclaration, IndentationText, Project, PropertyDeclaration, SourceFile } from "ts-morph";
 import { cleanTypeText, unwrapTypeName } from "./extract.js";

@@ -40,7 +40,7 @@ describe("buildImplementationReport", () => {
       ]),
     );
     expect(report.nodes.map((n) => n.name)).toEqual(["Half", "Done"]); // eksiği olan üstte
-    expect(report.totals).toEqual({ members: 3, filled: 2, skeletons: 1 });
+    expect(report.totals).toEqual({ members: 3, filled: 2, skeletons: 1, filledAi: 0, violations: 0 });
     expect(report.nodes[0]?.skeletons.map((s) => s.member)).toEqual(["b"]);
   });
 

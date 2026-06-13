@@ -1,34 +1,36 @@
-/** solarch generate — cloud'daki graftan deterministik kod iskeleti üret ve
- *  çalışma dizinine yaz.
+/** solarch generate — produce deterministic code scaffold from cloud graph and
+ *  write into the working directory.
  *
- *  Yazma politikası (emek koruması):
- *  - Yeni dosya → yazılır.
- *  - Mevcut dosya → varsayılan ATLANIR (elle/AI ile doldurulmuş kod ezilmez);
- *    `--force` hepsinin üzerine yazar.
- *  Üretim deterministiktir (aynı graf → bayt-aynı çıktı), bu yüzden değişmemiş
- *  iskelet dosyalarının üzerine yazmak zararsızdır — ama "değişti mi"yi
- *  kestirmek yerine kullanıcı kararına bırakıyoruz. */
+ *  Write policy (protects effort):
+ *  - New file → written.
+ *  - Existing file → skipped by default (hand/AI-filled code is never overwritten);
+ *    `--force` overwrites all.
+ *  Generation is deterministic (same graph → byte-identical output), so overwriting
+ *  unchanged scaffold files would be harmless — but we leave “changed or not” to
+ *  the user instead of guessing. */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import pc from "picocolors";
 import { SolarchApi, type GeneratedFile } from "../api.js";
-import { readProjectConfig } from "../config.js";
+import { mergeGeneratedManifest, readProjectConfig, type GeneratedManifest } from "../config.js";
 
 export interface GenerateOptions {
   rootDir: string;
-  /** Mevcut dosyaların üzerine de yaz. */
+  /** Overwrite existing files too. */
   force?: boolean;
 }
 
 export interface WriteResult {
   written: string[];
   skipped: string[];
-  /** force ile üzerine yazılanlar (written'ın alt kümesi değil — ayrı liste). */
+  /** Overwritten via force (not a subset of written — separate list). */
   overwritten: string[];
 }
 
-/** Üretilen dosyaları diske uygula — saf yazma katmanı (eklenti de kullanır). */
+/** Apply generated files to disk — pure write layer (extension uses this too).
+ *  Marked files are recorded in `.solarch/generated.json` manifest —
+ *  status detects “marker loss” (file exists but markers were removed) from here. */
 export function writeGeneratedFiles(
   rootDir: string,
   files: GeneratedFile[],
@@ -36,6 +38,7 @@ export function writeGeneratedFiles(
 ): WriteResult {
   const root = resolve(rootDir);
   const result: WriteResult = { written: [], skipped: [], overwritten: [] };
+  const manifest: GeneratedManifest = {};
   for (const f of files) {
     // Yol güvenliği: kök dışına taşan path'ler (../ vb.) reddedilir.
     const target = resolve(join(root, f.path));
@@ -52,7 +55,11 @@ export function writeGeneratedFiles(
     writeFileSync(target, f.content);
     if (exists) result.overwritten.push(f.path);
     else result.written.push(f.path);
+    if (f.surgicalMarkers > 0) {
+      manifest[f.path] = { nodeId: f.nodeId, markers: f.surgicalMarkers };
+    }
   }
+  if (Object.keys(manifest).length > 0) mergeGeneratedManifest(rootDir, manifest);
   return result;
 }
 

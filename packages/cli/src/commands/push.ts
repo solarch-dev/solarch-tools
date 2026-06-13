@@ -1,11 +1,11 @@
-/** solarch push — koddaki delta'yı (yeni node/edge + liste-property farkları)
- *  Solarch Cloud'a yazar.
+/** solarch push — writes code-side delta (new nodes/edges + list-property diffs)
+ *  to Solarch Cloud.
  *
- *  Akış: taze graf (revizyon R) → diff → plan göster → onay → tek graph/apply
- *  (baseRevision=R). 409 revizyon çatışmasında otomatik re-pull + re-plan + tek
- *  retry. Property güncellemeleri PATCH + expectedVersion ile gider; node
- *  çatışmasında interaktif seçim (cloud'u tut / kodu yaz / atla), TTY yoksa
- *  otomatik atla + raporla. Illegal edge varken push tamamen reddedilir. */
+ *  Flow: fresh graph (revision R) → diff → show plan → confirm → single graph/apply
+ *  (baseRevision=R). On 409 revision conflict: automatic re-pull + re-plan + one
+ *  retry. Property updates via PATCH + expectedVersion; on node conflict
+ *  interactive choice (keep cloud / write code / skip), no TTY → auto skip + report.
+ *  Push is fully rejected when illegal edges exist. */
 
 import { createInterface } from "node:readline/promises";
 import pc from "picocolors";
@@ -37,17 +37,17 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   const projectId = config.projectId;
   const api = SolarchApi.fromStoredCredentials();
 
-  // 1. Taze To-Be (revizyon R) + kurallar + As-Is.
+  // 1. Fresh To-Be (revision R) + rules + As-Is.
   const [toBe, rules] = await Promise.all([api.getGraph(projectId), api.getRules()]);
   const asIs = runScan(opts.rootDir);
 
-  // 2. Diff → eşleştirme cache'i güncelle → plan.
+  // 2. Diff → update match cache → plan.
   const previousCache = readMatchCache(opts.rootDir);
   const diff = diffGraphs(asIs, toBe, rules, previousCache);
   writeMatchCache(opts.rootDir, diff.cache);
   let plan = buildPushPlan(asIs, toBe, rules, diff.cache);
 
-  // Illegal edge'ler ASLA pushlanmaz — error basılır, push reddedilir.
+  // Illegal edges are NEVER pushed — errors printed, push refused.
   if (plan.illegalEdges.length > 0) {
     console.error(pc.red(pc.bold(`Push refused — ${plan.illegalEdges.length} illegal edge(s) in the code:`)));
     for (const ill of plan.illegalEdges) {
@@ -63,7 +63,7 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
     return;
   }
 
-  // 3. Planı göster + onay.
+  // 3. Show plan + confirm.
   renderPlan(plan, toBe.graphRevision);
   if (!opts.yes) {
     const ok = await confirm("Push these changes?");
@@ -73,7 +73,7 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
     }
   }
 
-  // 4. Ekleme — tek graph/apply (baseRevision=R); 409'da re-pull + tek retry.
+  // 4. Adds — single graph/apply (baseRevision=R); on 409 re-pull + one retry.
   let baseRevision = toBe.graphRevision;
   if (plan.newNodes.length > 0 || plan.newEdges.length > 0) {
     let applied = false;
@@ -89,7 +89,7 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
           process.exitCode = 1;
           return;
         }
-        // idMap → map.json: yeni node'lar anında eşleşmiş sayılır.
+        // idMap → map.json: new nodes are matched immediately.
         const cache = readMatchCache(opts.rootDir);
         for (const [key, tempId] of Object.entries(plan.tempIdByKey)) {
           const cloudId = result.idMap[tempId];
@@ -131,7 +131,7 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
     }
   }
 
-  // 5. Property güncellemeleri — PATCH + expectedVersion, çatışmada interaktif.
+  // 5. Property updates — PATCH + expectedVersion, interactive on conflict.
   if (plan.propertyUpdates.length > 0) {
     const { updated, skipped } = await applyPropertyUpdates(api, projectId, plan.propertyUpdates, opts.yes ?? false);
     console.log(pc.green(`✓ Updated properties on ${updated} node(s)${skipped > 0 ? pc.yellow(` (${skipped} skipped)`) : ""}.`));
@@ -140,7 +140,7 @@ export async function pushCommand(opts: PushOptions): Promise<void> {
   console.log(pc.bold(pc.green("Push complete.")));
 }
 
-/* ── yardımcılar ─────────────────────────────────────────────────── */
+/* ── helpers ─────────────────────────────────────────────────────── */
 
 async function replan(
   api: SolarchApi,
@@ -185,8 +185,8 @@ async function confirm(question: string): Promise<boolean> {
   return answer === "y" || answer === "yes";
 }
 
-/** PATCH'leri sırayla uygula. ERR_VERSION_CONFLICT'te:
- *  TTY → cloud'u tut / kodu yaz / atla; TTY yok (CI) → otomatik atla + raporla. */
+/** Apply PATCHes in order. On ERR_VERSION_CONFLICT:
+ *  TTY → keep cloud / write code / skip; no TTY (CI) → auto skip + report. */
 async function applyPropertyUpdates(
   api: SolarchApi,
   projectId: string,
@@ -216,7 +216,7 @@ async function applyPropertyUpdates(
         skipped++;
         continue;
       }
-      // "code": cloud bu arada değişti — güncel versiyonla zorla yaz.
+      // "code": cloud changed in the meantime — force write with current version.
       const currentVersion = typeof e.details.currentVersion === "number" ? e.details.currentVersion : undefined;
       try {
         await api.patchNode(projectId, u.cloudId, { properties: u.properties, expectedVersion: currentVersion });

@@ -5,7 +5,7 @@ import { DEFAULT_API_URL, writeCredentials } from "../config.js";
 
 export interface LoginOptions {
   apiUrl?: string;
-  /** Etkileşimsiz kullanım (CI): anahtar bayrak olarak verilir. */
+  /** Non-interactive use (CI): key passed as a flag. */
   key?: string;
 }
 
@@ -26,13 +26,13 @@ export async function loginCommand(opts: LoginOptions): Promise<void> {
     return;
   }
 
-  // Anahtarı kaydetmeden önce canlı doğrula — yanlış yapıştırma anında yakalanır.
+  // Validate live before saving — catches bad paste immediately.
   const api = new SolarchApi({ apiUrl, apiKey });
   try {
     const projects = await api.listProjects();
     const path = writeCredentials({ apiUrl, apiKey });
     console.log(pc.green(`Logged in. Credentials saved to ${path} (chmod 600).`));
-    console.log(`You have access to ${pc.bold(String(projects.length))} project(s). Next: ${pc.cyan("solarch link")}`);
+    console.log(`You have access to ${pc.bold(String(projects.length))} project(s). Next: ${pc.cyan("solarch connect")}`);
   } catch (e) {
     console.error(pc.red(`Login failed: ${(e as Error).message}`));
     process.exitCode = 1;
