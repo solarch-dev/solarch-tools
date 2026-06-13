@@ -1,13 +1,13 @@
 {
   "name": "@solarch/ast-core",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "NestJS AST read/write engine — extracts the As-Is architecture graph and performs safe property injection",
   "type": "module",
   "license": "SEE LICENSE IN ../../LICENSE",
   "repository": {
     "type": "git",
-    "url": "https://github.com/solarch-dev/solarch.git",
-    "directory": "solarch-tools/packages/ast-core"
+    "url": "https://github.com/solarch-dev/solarch-tools.git",
+    "directory": "packages/ast-core"
   },
   "homepage": "https://solarch.dev",
   "keywords": [
@@ -29,7 +29,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",

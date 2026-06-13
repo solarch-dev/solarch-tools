@@ -1,13 +1,13 @@
 {
   "name": "@solarch/cli",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Solarch CLI — architecture drift check, live binding and cloud sync for NestJS codebases",
   "type": "module",
   "license": "SEE LICENSE IN ../../LICENSE",
   "repository": {
     "type": "git",
-    "url": "https://github.com/solarch-dev/solarch.git",
-    "directory": "solarch-tools/packages/cli"
+    "url": "https://github.com/solarch-dev/solarch-tools.git",
+    "directory": "packages/cli"
   },
   "homepage": "https://solarch.dev",
   "keywords": [
