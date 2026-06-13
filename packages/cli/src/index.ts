@@ -51,7 +51,7 @@ configureProgramHelp(program);
 program
   .command("connect")
   .description("Connect this repo to Solarch (sign in + link project — start here)")
-  .option("--api-url <url>", "Solarch API base URL (default: https://api.solarch.dev/api/v1)")
+  .option("--api-url <url>", "Solarch API base URL (default: https://app.solarch.dev/api/v1)")
   .option("--key <key>", "API key (non-interactive)")
   .option("--project <id>", "Project id (skips interactive selection)")
   .action(async (opts: { apiUrl?: string; key?: string; project?: string }) => {
@@ -61,7 +61,7 @@ program
 program
   .command("login")
   .description("Sign in with an API key only (Settings → API Keys)")
-  .option("--api-url <url>", "Solarch API base URL (default: https://api.solarch.dev/api/v1)")
+  .option("--api-url <url>", "Solarch API base URL (default: https://app.solarch.dev/api/v1)")
   .option("--key <key>", "API key (non-interactive, e.g. CI)")
   .action(async (opts: { apiUrl?: string; key?: string }) => {
     await loginCommand(opts);

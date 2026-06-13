@@ -54,7 +54,7 @@ Saves the API key to `~/.solarch/credentials` (mode 600).
 | Option | Description |
 |---|---|
 | `--key <key>` | Pass the key on the command line (CI; no prompt) |
-| `--api-url <url>` | Override default `https://api.solarch.dev/api/v1` |
+| `--api-url <url>` | Override default `https://app.solarch.dev/api/v1` |
 
 ### `solarch link`
 
