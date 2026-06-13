@@ -11,6 +11,7 @@ import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { ClassDeclaration, Project, SyntaxKind } from "ts-morph";
 import { classifyClass } from "./classify.js";
+import { readSurgicalMembers } from "./surgical.js";
 import {
   constructorParamTypes,
   extractController,
@@ -218,7 +219,14 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
           break;
       }
 
-      addNode({ key: nodeKey(kind, name), kind, name, file, properties }, cls);
+      // Codegen işaretleri: varsa node'a iliştir (implementasyon durumu katmanı).
+      const surgical = readSurgicalMembers(cls);
+      addNode(
+        surgical.length > 0
+          ? { key: nodeKey(kind, name), kind, name, file, properties, surgical }
+          : { key: nodeKey(kind, name), kind, name, file, properties },
+        cls,
+      );
     }
   }
 

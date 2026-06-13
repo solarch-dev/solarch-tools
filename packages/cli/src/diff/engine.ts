@@ -56,8 +56,9 @@ const matches = (pattern: string | string[], value: string): boolean =>
   toArray(pattern).some((p) => p === "*" || p === value);
 
 /** As-Is edge'in legalliği — önce blacklist (keskin yasak), sonra whitelist
- *  (default deny). Backend RulesEngine ile aynı sıra. */
-function evaluateEdge(
+ *  (default deny). Backend RulesEngine ile aynı sıra. Push planner da kullanır
+ *  (illegal edge ASLA pushlanmaz). */
+export function evaluateEdge(
   rules: RuleCatalog,
   source: NodeKind,
   edge: EdgeKind,
@@ -96,25 +97,39 @@ function listNames(properties: Record<string, unknown>, listField: string, nameF
   );
 }
 
-/** Tablo kolonları / DTO alanları gibi liste-property farkları. */
-function propertyDrift(asIs: AsIsNode, cloud: CloudNode): string[] {
-  const spec: Partial<Record<NodeKind, { listField: string; nameField: string; label: string }>> = {
-    Table: { listField: "Columns", nameField: "Name", label: "column" },
-    DTO: { listField: "Fields", nameField: "Name", label: "field" },
-    Service: { listField: "Methods", nameField: "MethodName", label: "method" },
-    Controller: { listField: "Endpoints", nameField: "Route", label: "endpoint" },
-    Enum: { listField: "Values", nameField: "Key", label: "value" },
-  };
-  const s = spec[asIs.kind];
-  if (!s) return [];
+/** Kind → liste-alanı tanımı. Diff bu alanlarda info-seviyesi drift raporlar;
+ *  push'ta bu alanlarda **kod kaynak kabul edilir** (cloud listesi kodunkiyle
+ *  değiştirilir, diğer cloud property'leri korunur). */
+export const LIST_FIELD_SPEC: Partial<Record<NodeKind, { listField: string; nameField: string; label: string }>> = {
+  Table: { listField: "Columns", nameField: "Name", label: "column" },
+  DTO: { listField: "Fields", nameField: "Name", label: "field" },
+  Service: { listField: "Methods", nameField: "MethodName", label: "method" },
+  Controller: { listField: "Endpoints", nameField: "Route", label: "endpoint" },
+  Enum: { listField: "Values", nameField: "Key", label: "value" },
+};
 
+/** Eşleşen node çiftinde liste-alanı farkı (yapılandırılmış) — yoksa null. */
+export function listFieldDrift(
+  asIs: AsIsNode,
+  cloud: CloudNode,
+): { listField: string; label: string; missing: string[]; extra: string[] } | null {
+  const s = LIST_FIELD_SPEC[asIs.kind];
+  if (!s) return null;
   const inCode = listNames(asIs.properties, s.listField, s.nameField);
   const inCloud = listNames(cloud.properties, s.listField, s.nameField);
-  const drifts: string[] = [];
   const missing = [...inCloud].filter((n) => !inCode.has(n));
   const extra = [...inCode].filter((n) => !inCloud.has(n));
-  if (missing.length > 0) drifts.push(`${s.label}(s) in cloud but not in code: ${missing.join(", ")}`);
-  if (extra.length > 0) drifts.push(`${s.label}(s) in code but not in cloud: ${extra.join(", ")}`);
+  if (missing.length === 0 && extra.length === 0) return null;
+  return { listField: s.listField, label: s.label, missing, extra };
+}
+
+/** Tablo kolonları / DTO alanları gibi liste-property farkları (insan-okur). */
+function propertyDrift(asIs: AsIsNode, cloud: CloudNode): string[] {
+  const drift = listFieldDrift(asIs, cloud);
+  if (!drift) return [];
+  const drifts: string[] = [];
+  if (drift.missing.length > 0) drifts.push(`${drift.label}(s) in cloud but not in code: ${drift.missing.join(", ")}`);
+  if (drift.extra.length > 0) drifts.push(`${drift.label}(s) in code but not in cloud: ${drift.extra.join(", ")}`);
   return drifts;
 }
 

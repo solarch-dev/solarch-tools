@@ -10,7 +10,10 @@ import pc from "picocolors";
 import { loginCommand } from "./commands/login.js";
 import { linkCommand } from "./commands/link.js";
 import { scanCommand } from "./commands/scan.js";
+import { statusCommand } from "./commands/status.js";
 import { diffCommand } from "./commands/diff.js";
+import { pullCommand } from "./commands/pull.js";
+import { pushCommand } from "./commands/push.js";
 import { bindCommand } from "./commands/bind.js";
 import { watchCommand } from "./commands/watch.js";
 
@@ -47,6 +50,15 @@ program
   });
 
 program
+  .command("status")
+  .description("Implementation status: how much of the generated scaffold is actually filled in")
+  .option("--json", "Machine-readable output")
+  .option("--ci", "Exit 1 if any NOT_IMPLEMENTED member remains")
+  .action((opts: { json?: boolean; ci?: boolean }) => {
+    statusCommand({ rootDir: process.cwd(), ...opts });
+  });
+
+program
   .command("diff")
   .description("Drift check: compare the code (As-Is) with the Solarch architecture (To-Be)")
   .option("--json", "Machine-readable output")
@@ -54,6 +66,21 @@ program
   .option("--to-be <file>", "Offline mode: read the To-Be graph from a JSON file")
   .action(async (opts: { json?: boolean; ci?: boolean; toBe?: string }) => {
     await diffCommand({ rootDir: process.cwd(), ...opts });
+  });
+
+program
+  .command("pull")
+  .description("Download the To-Be graph (with its revision) to .solarch/to-be.json")
+  .action(async () => {
+    await pullCommand({ rootDir: process.cwd() });
+  });
+
+program
+  .command("push")
+  .description("Push code-side additions (nodes/edges) and list-property updates to Solarch Cloud")
+  .option("--yes", "Skip the confirmation prompt (CI)")
+  .action(async (opts: { yes?: boolean }) => {
+    await pushCommand({ rootDir: process.cwd(), yes: opts.yes });
   });
 
 program

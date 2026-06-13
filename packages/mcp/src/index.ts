@@ -1,17 +1,33 @@
-/** @solarch/mcp — Faz 3 iskeleti.
+#!/usr/bin/env node
+/** solarch-mcp — Solarch MCP sunucusu (stdio).
  *
- *  Burada Solarch MCP (Model Context Protocol) sunucusu yaşayacak:
- *  - Salt-okunur araçlar: get_architecture, get_rules — ajan kod yazmadan önce
- *    projenin güncel haritasını ve kurallarını buradan çeker.
- *  - Güvenli mutasyonlar: sync_properties, create_node_safely — ajan dosyayı
- *    düz metin olarak değiştirmek yerine ast-core'un AST motorundan geçer.
- *  - Drift geri besleme döngüsü: ajanın ürettiği kod kaydedilmeden önce
- *    drift-check'ten geçirilir; ihlalde ajan hata payload'ı ile düzeltmeye zorlanır.
+ *  AI ajan istemcileri (Claude Desktop, Cursor, Cline…) bu process'i spawn eder;
+ *  JSON-RPC stdin/stdout üzerinden akar. stdout transport kanalıdır — loglar
+ *  YALNIZ stderr'e yazılır.
  *
- *  ast-core API'si bilinçli olarak saf fonksiyonlar halinde tasarlandı
- *  (scanProject, syncProperties, diffGraphs) — bu sunucu onları stdio MCP
- *  araçları olarak sarmalayacak. */
+ *  Kullanım (mcp.json):
+ *    { "command": "solarch-mcp", "args": ["--root", "/path/to/nestjs-repo"] }
+ *  --root verilmezse process cwd'si kullanılır. Kimlik: `solarch login`,
+ *  proje bağı: `solarch link` (CLI ile paylaşılan ~/.solarch + solarch.json). */
 
-export const MCP_PHASE = 3;
-export const NOT_IMPLEMENTED =
-  "@solarch/mcp is a Phase 3 placeholder — the MCP server lands after the CLI core (Phase 1) and the public API (Phase 2) ship.";
+import { resolve } from "node:path";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { buildServer } from "./server.js";
+
+function parseRoot(argv: string[]): string {
+  const i = argv.indexOf("--root");
+  const value = i >= 0 ? argv[i + 1] : undefined;
+  return resolve(value ?? process.cwd());
+}
+
+async function main(): Promise<void> {
+  const rootDir = parseRoot(process.argv.slice(2));
+  const server = buildServer(rootDir);
+  await server.connect(new StdioServerTransport());
+  console.error(`[solarch-mcp] ready on stdio — root: ${rootDir}`);
+}
+
+main().catch((e: Error) => {
+  console.error(`[solarch-mcp] fatal: ${e.message}`);
+  process.exit(1);
+});

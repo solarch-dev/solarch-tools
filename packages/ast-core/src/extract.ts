@@ -545,11 +545,25 @@ export function extractThrownExceptionNames(cls: ClassDeclaration): string[] {
 
 /* ── Basit Exception / Middleware / Worker / EventHandler props ── */
 
+/** Backend şemaları strict + zorunlu alanlı — koddan çıkarılamayan alanlara
+ *  şema-geçerli makul default yazılır ki `solarch push` node'ları cloud'a
+ *  ekleyebilsin (kullanıcı canvas'ta düzeltir). */
 export function extractException(cls: ClassDeclaration): Record<string, unknown> {
   const className = cls.getName() ?? "UnknownException";
+  // Nest'in yerleşik HttpException alt sınıflarından status tahmini.
+  const parent = cls.getExtends()?.getExpression().getText() ?? "";
+  const statusByParent: Record<string, number> = {
+    BadRequestException: 400,
+    UnauthorizedException: 401,
+    ForbiddenException: 403,
+    NotFoundException: 404,
+    ConflictException: 409,
+  };
   return {
     ExceptionName: className,
     Description: `${className} error type`,
+    HttpStatusCode: statusByParent[parent] ?? 500,
+    LogSeverity: "Error",
   };
 }
 
@@ -558,24 +572,34 @@ export function extractMiddleware(cls: ClassDeclaration): Record<string, unknown
   return {
     MiddlewareName: className,
     Description: `${className} request pipeline step`,
+    AppliesTo: "Global",
+    ExecutionOrder: 0,
+    MiddlewareType: /auth|guard/i.test(className) ? "Auth" : "Custom",
+    Config: [],
   };
 }
 
 export function extractWorker(cls: ClassDeclaration): Record<string, unknown> {
   const className = cls.getName() ?? "UnknownWorker";
-  // @Cron("0 * * * *") ifadesinden zamanlama çek.
+  // @Cron("0 * * * *") ifadesinden zamanlama + görev metodu çek.
   let schedule = "";
+  let task = "";
   for (const m of cls.getMethods()) {
     const cron = m.getDecorator("Cron");
     if (cron) {
       schedule = firstStringArg(cron) ?? "";
+      task = m.getName();
       break;
     }
   }
   return {
     WorkerName: className,
     Description: `${className} scheduled job`,
-    ...(schedule ? { Schedule: schedule } : {}),
+    Schedule: schedule || "manual",
+    TaskToExecute: task || "run",
+    TimeoutSeconds: 300,
+    RetryPolicy: { MaxRetries: 0 },
+    IsEnabled: true,
   };
 }
 
@@ -593,6 +617,7 @@ export function extractEventHandler(cls: ClassDeclaration): Record<string, unkno
     HandlerName: className,
     Description: `${className} event consumer`,
     EventName: eventName || "unknown",
+    IsAsync: true,
   };
 }
 
@@ -601,6 +626,8 @@ export function extractOrchestrator(cls: ClassDeclaration): Record<string, unkno
   return {
     OrchestratorName: className,
     Description: `${className} saga coordinator`,
+    Pattern: "Saga",
+    Steps: [],
   };
 }
 

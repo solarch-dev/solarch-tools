@@ -82,6 +82,8 @@ export interface AsIsNode {
   file: string;
   /** Backend şemasına map edilmiş properties (best-effort). */
   properties: Record<string, unknown>;
+  /** Codegen'in bıraktığı surgical işaretler (varsa) — implementasyon durumu. */
+  surgical?: import("./surgical.js").SurgicalMember[];
 }
 
 /** Koddan çıkarılan edge — kaynağı AST kanıtıdır (constructor injection, @Body, ...). */

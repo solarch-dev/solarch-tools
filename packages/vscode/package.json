@@ -1,0 +1,127 @@
+{
+  "name": "solarch-vscode",
+  "displayName": "Solarch",
+  "description": "Architecture graph + drift status for Solarch-linked NestJS repos — see the live state of code vs architecture, like Git Graph but for your system design",
+  "version": "0.4.0",
+  "publisher": "solarch",
+  "private": true,
+  "icon": "media/icon.png",
+  "license": "SEE LICENSE IN ../../../LICENSE",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:solarch.json"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "solarch",
+          "title": "Solarch",
+          "icon": "media/solarch.svg"
+        }
+      ]
+    },
+    "views": {
+      "solarch": [
+        {
+          "id": "solarchState",
+          "name": "Architecture",
+          "icon": "media/solarch.svg",
+          "contextualTitle": "Solarch"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "solarch.refresh",
+        "title": "Solarch: Refresh (rescan + re-fetch cloud)",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "solarch.push",
+        "title": "Solarch: Push Code Changes to Cloud",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "solarch.pull",
+        "title": "Solarch: Pull To-Be Graph",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "solarch.login",
+        "title": "Solarch: Sign in with API Key",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "solarch.link",
+        "title": "Solarch: Link Project",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "solarch.checkDrift",
+        "title": "Solarch: Check Drift"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "solarch.push",
+          "when": "view == solarchState && solarch.status == 'ok'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "solarch.pull",
+          "when": "view == solarchState && solarch.status == 'ok'",
+          "group": "navigation@2"
+        },
+        {
+          "command": "solarch.refresh",
+          "when": "view == solarchState",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "solarchState",
+        "contents": "Solarch is starting…\nIf this view stays empty, run the \"Developer: Reload Window\" command — the extension host needs a restart after installing or updating the extension.",
+        "when": "!solarch.status"
+      },
+      {
+        "view": "solarchState",
+        "contents": "Connect VS Code to your Solarch account to see the live state of this repository's architecture.\n[Sign in with API Key](command:solarch.login)\nGet a key from Solarch → Settings → API Keys.",
+        "when": "solarch.status == 'notLoggedIn'"
+      },
+      {
+        "view": "solarchState",
+        "contents": "You're signed in, but this workspace isn't linked to a Solarch project yet.\n[Link a Project](command:solarch.link)\nThis writes a solarch.json to the repository root (commit it).",
+        "when": "solarch.status == 'notLinked'"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "vitest run",
+    "lint": "tsc --noEmit",
+    "package": "pnpm build && vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@solarch/ast-core": "workspace:*",
+    "@solarch/cli": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.7.1",
+    "esbuild": "^0.27.7",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

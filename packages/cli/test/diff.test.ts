@@ -46,13 +46,14 @@ function toBe(partial?: Partial<CloudGraph>): CloudGraph {
   return {
     project: { id: "p1", name: "Demo" },
     nodes: [
-      { id: "n1", type: "Service", projectId: "p1", properties: { ServiceName: "UsersService", Methods: [{ MethodName: "create" }, { MethodName: "list" }] } },
-      { id: "n2", type: "Repository", projectId: "p1", properties: { RepositoryName: "UsersRepository" } },
+      { id: "n1", type: "Service", projectId: "p1", version: 1, properties: { ServiceName: "UsersService", Methods: [{ MethodName: "create" }, { MethodName: "list" }] } },
+      { id: "n2", type: "Repository", projectId: "p1", version: 1, properties: { RepositoryName: "UsersRepository" } },
     ],
     edges: [
       { id: "e1", kind: "CALLS", sourceNodeId: "n1", targetNodeId: "n2", properties: {} },
     ],
     counts: { nodes: 2, edges: 1 },
+    graphRevision: 0,
     ...partial,
   };
 }
@@ -90,7 +91,7 @@ describe("diffGraphs", () => {
 
   it("cloud'da olup kodda olmayan node → error", () => {
     const cloud = toBe();
-    cloud.nodes.push({ id: "n3", type: "Controller", projectId: "p1", properties: { ControllerName: "UsersController" } });
+    cloud.nodes.push({ id: "n3", type: "Controller", projectId: "p1", version: 1, properties: { ControllerName: "UsersController" } });
     const r = diffGraphs(asIs(), cloud, RULES, {});
     expect(r.counts.errors).toBe(1);
     expect(r.findings[0]).toMatchObject({ code: "DRIFT_NODE_MISSING_IN_CODE", severity: "error" });
@@ -135,7 +136,7 @@ describe("diffGraphs", () => {
       reason: "constructor injection: repo: UsersRepository",
     });
     const cloud = toBe();
-    cloud.nodes.push({ id: "n3", type: "Controller", projectId: "p1", properties: { ControllerName: "UsersController" } });
+    cloud.nodes.push({ id: "n3", type: "Controller", projectId: "p1", version: 1, properties: { ControllerName: "UsersController" } });
 
     const r = diffGraphs(code, cloud, RULES, {});
     const illegal = r.findings.find((f) => f.code === "DRIFT_ILLEGAL_EDGE");

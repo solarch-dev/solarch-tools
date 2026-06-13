@@ -9,6 +9,8 @@ export class ApiError extends Error {
     message: string,
     readonly code: string,
     readonly status: number,
+    /** Hata zarfındaki ek alanlar (örn. currentRevision, currentVersion). */
+    readonly details: Record<string, unknown> = {},
   ) {
     super(message);
   }
@@ -20,6 +22,8 @@ export interface CloudNode {
   id: string;
   type: NodeKind;
   projectId: string;
+  /** Optimistic locking — PATCH expectedVersion bu değerle gider. */
+  version: number;
   properties: Record<string, unknown>;
 }
 
@@ -36,7 +40,44 @@ export interface CloudGraph {
   nodes: CloudNode[];
   edges: CloudEdge[];
   counts: { nodes: number; edges: number };
+  /** Graf revizyonu — push'un baseRevision çatışma kontrolü bu değere dayanır. */
+  graphRevision: number;
 }
+
+/* ── graph/apply (push köprüsü) ── */
+
+export interface ApplyNode {
+  tempId: string;
+  type: NodeKind;
+  properties: Record<string, unknown>;
+}
+
+/** Uçlar: tempId (batch içi yeni node) veya id (mevcut cloud node) — tam biri. */
+export interface ApplyEdge {
+  sourceTempId?: string;
+  sourceId?: string;
+  targetTempId?: string;
+  targetId?: string;
+  edgeType: EdgeKind;
+  label?: string;
+}
+
+export interface ApplyPayload {
+  baseRevision?: number;
+  mutations: { nodes: ApplyNode[]; edges: ApplyEdge[] };
+}
+
+export interface ApplyViolation {
+  tempId?: string;
+  edgeIndex?: number;
+  code: string;
+  message: string;
+  suggestion?: string;
+}
+
+export type ApplyResult =
+  | { success: true; idMap: Record<string, string>; nodeCount: number; edgeCount: number; graphRevision: number }
+  | { success: false; transactionStatus: "ROLLED_BACK"; message: string; violations: ApplyViolation[] };
 
 export interface RuleCatalog {
   whitelist: {
@@ -101,9 +142,10 @@ export class SolarchApi {
       | { success: false; error: { code: string; message: string } }
       | null;
     if (!res.ok || !body || body.success !== true) {
-      const code = body && "error" in body ? body.error.code : "ERR_UNKNOWN";
-      const message = body && "error" in body ? body.error.message : `HTTP ${res.status}`;
-      throw new ApiError(message, code, res.status);
+      const error = body && "error" in body ? (body.error as Record<string, unknown>) : null;
+      const code = typeof error?.code === "string" ? error.code : "ERR_UNKNOWN";
+      const message = typeof error?.message === "string" ? error.message : `HTTP ${res.status}`;
+      throw new ApiError(message, code, res.status, error ?? {});
     }
     return body.data;
   }
@@ -120,5 +162,27 @@ export class SolarchApi {
 
   getRules(): Promise<RuleCatalog> {
     return this.request<RuleCatalog>("/rules");
+  }
+
+  /** Toplu ekleme (push) — yeni node'lar + tempId/cloudId karışık edge'ler,
+   *  tek atomik transaction. Revizyon eskidiyse 409 ERR_GRAPH_REVISION_CONFLICT. */
+  applyGraph(projectId: string, payload: ApplyPayload): Promise<ApplyResult> {
+    return this.request<ApplyResult>(`/projects/${projectId}/graph/apply`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  /** Node property güncelleme — expectedVersion ile optimistic locking.
+   *  Cloud'da bu arada değiştiyse 409 ERR_VERSION_CONFLICT. */
+  patchNode(
+    projectId: string,
+    nodeId: string,
+    body: { properties: Record<string, unknown>; expectedVersion?: number },
+  ): Promise<CloudNode> {
+    return this.request<CloudNode>(`/projects/${projectId}/nodes/${nodeId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
   }
 }

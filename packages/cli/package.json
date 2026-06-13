@@ -7,11 +7,18 @@
     "solarch": "./dist/index.js"
   },
   "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./lib": {
+      "types": "./dist/lib.d.ts",
+      "import": "./dist/lib.js"
+    }
+  },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --clean",
+    "build": "tsup src/index.ts src/lib.ts --format esm --dts --clean",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "lint": "tsc --noEmit"
