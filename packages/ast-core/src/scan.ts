@@ -14,11 +14,13 @@ import { classifyClass } from "./classify.js";
 import { readSurgicalMembers } from "./surgical.js";
 import {
   constructorParamTypes,
+  extractCache,
   extractController,
   extractDto,
   extractEnum,
   extractEventHandler,
   extractException,
+  extractExternalService,
   extractMiddleware,
   extractModule,
   extractOrchestrator,
@@ -213,6 +215,12 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
           break;
         case "EventHandler":
           properties = extractEventHandler(cls);
+          break;
+        case "Cache":
+          properties = extractCache(cls);
+          break;
+        case "ExternalService":
+          properties = extractExternalService(cls);
           break;
         default:
           properties = { Description: `${name} (${kind})` };

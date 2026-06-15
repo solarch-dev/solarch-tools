@@ -2,11 +2,33 @@
   "name": "solarch-vscode",
   "displayName": "Solarch",
   "description": "Architecture graph + drift status for Solarch-linked NestJS repos — see the live state of code vs architecture, like Git Graph but for your system design",
-  "version": "0.6.0",
+  "version": "0.8.0",
   "publisher": "solarch",
   "private": true,
   "icon": "media/icon.png",
-  "license": "SEE LICENSE IN ../../../LICENSE",
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://solarch.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/solarch-dev/solarch-tools.git",
+    "directory": "packages/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/solarch-dev/solarch-tools/issues"
+  },
+  "keywords": [
+    "solarch",
+    "nestjs",
+    "architecture",
+    "drift",
+    "graph",
+    "codegen",
+    "typescript"
+  ],
+  "galleryBanner": {
+    "color": "#1A1A18",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -16,7 +38,8 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "workspaceContains:solarch.json"
+    "workspaceContains:solarch.json",
+    "onStartupFinished"
   ],
   "contributes": {
     "viewsContainers": {
@@ -45,6 +68,11 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "solarch.checkDrift",
+        "title": "Solarch: Check Drift",
+        "icon": "$(git-compare)"
+      },
+      {
         "command": "solarch.push",
         "title": "Solarch: Push Code Changes to Cloud",
         "icon": "$(cloud-upload)"
@@ -70,31 +98,80 @@
         "icon": "$(rocket)"
       },
       {
-        "command": "solarch.checkDrift",
-        "title": "Solarch: Check Drift"
+        "command": "solarch.bind",
+        "title": "Solarch: Bind Entity to DTO (live sync)",
+        "icon": "$(link)"
+      },
+      {
+        "command": "solarch.selectFolder",
+        "title": "Solarch: Select Folder to Track",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "solarch.switchProject",
+        "title": "Solarch: Switch Project",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "solarch.acknowledge",
+        "title": "Solarch: Acknowledge Revision"
+      },
+      {
+        "command": "solarch.openFinding",
+        "title": "Solarch: Open Finding"
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "solarch.acknowledge",
+          "when": "false"
+        },
+        {
+          "command": "solarch.openFinding",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
-          "command": "solarch.push",
+          "command": "solarch.switchProject",
+          "when": "view == solarchState && solarch.status == 'ok'",
+          "group": "navigation@0"
+        },
+        {
+          "command": "solarch.checkDrift",
           "when": "view == solarchState && solarch.status == 'ok'",
           "group": "navigation@1"
         },
         {
-          "command": "solarch.pull",
+          "command": "solarch.push",
           "when": "view == solarchState && solarch.status == 'ok'",
           "group": "navigation@2"
         },
         {
+          "command": "solarch.pull",
+          "when": "view == solarchState && solarch.status == 'ok'",
+          "group": "navigation@3"
+        },
+        {
           "command": "solarch.refresh",
           "when": "view == solarchState",
-          "group": "navigation@3"
+          "group": "navigation@4"
+        },
+        {
+          "command": "solarch.selectFolder",
+          "when": "view == solarchState",
+          "group": "1_actions@0"
         },
         {
           "command": "solarch.generate",
           "when": "view == solarchState && solarch.status == 'ok'",
           "group": "1_actions@1"
+        },
+        {
+          "command": "solarch.bind",
+          "when": "view == solarchState && solarch.status == 'ok'",
+          "group": "1_actions@2"
         }
       ]
     },
@@ -111,7 +188,12 @@
       },
       {
         "view": "solarchState",
-        "contents": "You're signed in, but this workspace isn't linked to a Solarch project yet.\n[Link a Project](command:solarch.link)\nThis writes a solarch.json to the repository root (commit it).",
+        "contents": "Choose the folder Solarch should track — a project inside this workspace (monorepo subfolders are supported).\n[Select Folder](command:solarch.selectFolder)",
+        "when": "solarch.status == 'noFolder'"
+      },
+      {
+        "view": "solarchState",
+        "contents": "You're signed in, but this folder isn't linked to a Solarch project yet.\n[Link a Project](command:solarch.link)\nThis writes a solarch.json to the tracked folder (commit it).\n[Change tracked folder](command:solarch.selectFolder)",
         "when": "solarch.status == 'notLinked'"
       }
     ]
@@ -120,6 +202,7 @@
     "build": "node build.mjs",
     "test": "vitest run",
     "lint": "tsc --noEmit",
+    "smoke": "node scripts/smoke-scan.mjs",
     "package": "pnpm build && vsce package --no-dependencies"
   },
   "dependencies": {

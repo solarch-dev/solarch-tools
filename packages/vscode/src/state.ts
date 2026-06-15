@@ -6,6 +6,7 @@
  *  - `StateEngine` kabuk: config/credentials okur, cloud yanıtını cache'ler
  *    (60sn TTL), hataları yönlendirme önerili GraphStateError'a çevirir. */
 
+import { existsSync, readFileSync } from "node:fs";
 import { nameOfNode, type AsIsGraph, type NodeKind } from "@solarch/ast-core";
 import {
   ApiError,
@@ -17,6 +18,7 @@ import {
   readMatchCache,
   readProjectConfig,
   runScan,
+  toBePath,
   toImplementationEntries,
   writeMatchCache,
   type CloudGraph,
@@ -26,7 +28,9 @@ import {
   type RuleCatalog,
 } from "@solarch/cli/lib";
 import {
+  CLOUD_TIMEOUT_MS,
   familyOf,
+  withTimeout,
   type GraphState,
   type GraphStateOk,
   type ImplementationState,
@@ -173,6 +177,7 @@ export function buildGraphState(
     counts: diff.counts,
     implementation: buildImplementation(asIs, manifest),
     generatedAt: new Date().toISOString(),
+    hasGenerated: Object.keys(manifest).length > 0,
   };
 }
 
@@ -185,6 +190,7 @@ export class StateEngine {
   private cloud: CloudGraph | null = null;
   private rules: RuleCatalog | null = null;
   private cloudFetchedAt = 0;
+  private offlineCloud = false;
   private lastReportSignature = "";
   private lastReportAt = 0;
 
@@ -220,16 +226,30 @@ export class StateEngine {
     const stale = Date.now() - this.cloudFetchedAt > CLOUD_TTL_MS;
     if (opts.forceCloud || stale || !this.cloud) {
       try {
-        [this.cloud, this.rules] = await Promise.all([api.getGraph(config.projectId), api.getRules()]);
+        [this.cloud, this.rules] = await withTimeout(
+          Promise.all([api.getGraph(config.projectId), api.getRules()]),
+          CLOUD_TIMEOUT_MS,
+          "Solarch cloud fetch",
+        );
         this.cloudFetchedAt = Date.now();
+        this.offlineCloud = false;
       } catch (e) {
-        const msg = e instanceof ApiError ? `${e.code}: ${e.message}` : (e as Error).message;
-        return {
-          ok: false,
-          reason: "apiError",
-          message: msg,
-          suggestion: "Check that the Solarch API is reachable and your API key is still valid.",
-        };
+        // Cloud erişilemiyor — son `solarch pull` ile inen .solarch/to-be.json
+        // varsa ona düş (offline). Kural kataloğu yok → illegal-edge denetimi pasif.
+        const cached = readToBeFile(this.rootDir);
+        if (cached) {
+          this.cloud = cached;
+          this.rules = null;
+          this.offlineCloud = true;
+        } else {
+          const msg = e instanceof ApiError ? `${e.code}: ${e.message}` : (e as Error).message;
+          return {
+            ok: false,
+            reason: "apiError",
+            message: msg,
+            suggestion: "Check that the Solarch API is reachable and your API key is still valid.",
+          };
+        }
       }
     }
 
@@ -247,19 +267,31 @@ export class StateEngine {
 
     const diff = diffGraphs(asIs, this.cloud, this.rules, readMatchCache(this.rootDir));
     writeMatchCache(this.rootDir, diff.cache);
-    const state = buildGraphState(asIs, this.cloud, this.rules, diff, readGeneratedManifest(this.rootDir));
+    const manifest = readGeneratedManifest(this.rootDir);
+    const state = buildGraphState(asIs, this.cloud, this.rules, diff, manifest);
+    if (this.offlineCloud) state.offline = true;
 
     // Doluluk sayaçlarını cloud'a sessizce raporla — canvas rozetleri beslenir.
-    void this.maybeReport(api, config.projectId, asIs, diff.cache);
+    // Yalnız scaffold'lu repolarda (marker var) ve online'ken; boş repoda /
+    // offline'da raporu hiç kurma.
+    if (!this.offlineCloud && state.implementation.total > 0) {
+      void this.maybeReport(api, config.projectId, asIs, manifest, diff.cache);
+    }
     return state;
   }
 
   /** Otomatik implementasyon raporu: değişiklik varsa + 60sn throttle.
    *  Başarısızlık yutulur — rapor bir konfor özelliğidir, UI'ı asla bozmaz. */
-  private async maybeReport(api: SolarchApi, projectId: string, asIs: AsIsGraph, cache: MatchCache): Promise<void> {
+  private async maybeReport(
+    api: SolarchApi,
+    projectId: string,
+    asIs: AsIsGraph,
+    manifest: GeneratedManifest,
+    cache: MatchCache,
+  ): Promise<void> {
     try {
       const entries = toImplementationEntries(
-        buildImplementationReport(asIs, readGeneratedManifest(this.rootDir)),
+        buildImplementationReport(asIs, manifest),
         cache,
       );
       if (entries.length === 0) return;
@@ -272,5 +304,19 @@ export class StateEngine {
     } catch {
       // sessiz — bir sonraki refresh yeniden dener
     }
+  }
+}
+
+/* ── offline yedeği ──────────────────────────────────────────────── */
+
+/** Son `solarch pull` ile inen To-Be grafı (.solarch/to-be.json). Cloud
+ *  erişilemediğinde diff bu dosyaya karşı hesaplanır. Yoksa/bozuksa null. */
+function readToBeFile(rootDir: string): CloudGraph | null {
+  const p = toBePath(rootDir);
+  if (!existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) as CloudGraph;
+  } catch {
+    return null;
   }
 }

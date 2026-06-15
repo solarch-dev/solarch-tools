@@ -34,16 +34,7 @@ export async function loginCommand(opts: LoginOptions): Promise<void> {
     console.log(pc.green(`Logged in. Credentials saved to ${path} (chmod 600).`));
     console.log(`You have access to ${pc.bold(String(projects.length))} project(s). Next: ${pc.cyan("solarch connect")}`);
   } catch (e) {
-    const err = e as Error & { status?: number };
-    console.error(pc.red(`Login failed (${apiUrl}): ${err.message}`));
-    if (err.status === 404) {
-      console.error(
-        pc.yellow(
-          "Tip: Solarch Cloud API lives at app.solarch.dev — try:\n" +
-            `  solarch login --api-url ${DEFAULT_API_URL}`,
-        ),
-      );
-    }
+    console.error(pc.red(`Login failed: ${(e as Error).message}`));
     process.exitCode = 1;
   }
 }

@@ -579,6 +579,32 @@ export function extractMiddleware(cls: ClassDeclaration): Record<string, unknown
   };
 }
 
+export function extractCache(cls: ClassDeclaration): Record<string, unknown> {
+  const className = cls.getName() ?? "UnknownCache";
+  // Engine: enjekte edilen istemci tipinden tahmin (Memcached'i ayıkla), yoksa Redis.
+  const params = constructorParamTypes(cls).map((p) => p.typeName).join(" ");
+  const engine = /memcached/i.test(params) ? "Memcached" : "Redis";
+  return {
+    CacheName: className,
+    Description: `${className} cache layer`,
+    KeyPattern: "*",
+    TTL_Seconds: 3600,
+    Engine: engine,
+  };
+}
+
+export function extractExternalService(cls: ClassDeclaration): Record<string, unknown> {
+  const className = cls.getName() ?? "UnknownExternalService";
+  return {
+    ServiceName: className,
+    Description: `${className} external API client`,
+    BaseURL: "https://example.com",
+    AuthType: "None",
+    TimeoutSeconds: 30,
+    Endpoints: [],
+  };
+}
+
 export function extractWorker(cls: ClassDeclaration): Record<string, unknown> {
   const className = cls.getName() ?? "UnknownWorker";
   // @Cron("0 * * * *") ifadesinden zamanlama + görev metodu çek.

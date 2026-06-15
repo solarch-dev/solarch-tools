@@ -46,6 +46,25 @@ function hasClassValidatorProps(cls: ClassDeclaration): boolean {
   );
 }
 
+/** Constructor param tip adlarından enjekte edilen istemci tipini ara. */
+function injectsType(cls: ClassDeclaration, typeNames: string[]): boolean {
+  const ctor = cls.getConstructors()[0];
+  if (!ctor) return false;
+  return ctor.getParameters().some((p) => {
+    const t = p.getTypeNode()?.getText() ?? "";
+    return typeNames.some((n) => t === n || t.endsWith(`.${n}`) || t.startsWith(`${n}<`) || t.startsWith(`${n} `));
+  });
+}
+
+/** @Inject(CACHE_MANAGER) — cache-manager kanonik enjeksiyonu (kesin Cache kanıtı). */
+function injectsCacheManager(cls: ClassDeclaration): boolean {
+  const ctor = cls.getConstructors()[0];
+  if (!ctor) return false;
+  return ctor.getParameters().some((p) =>
+    p.getDecorators().some((d) => d.getName() === "Inject" && /CACHE_MANAGER/.test(d.getText())),
+  );
+}
+
 /** Sınıfı 21'lik Solarch taksonomisine oturt. null → mimari node değil
  *  (yardımcı sınıf, plain class vb.) — sessizce atlanır. */
 export function classifyClass(cls: ClassDeclaration): NodeKind | null {
@@ -82,6 +101,12 @@ export function classifyClass(cls: ClassDeclaration): NodeKind | null {
     if (hasMethodDecorator(cls, ["OnEvent", "EventPattern", "MessagePattern"])) return "EventHandler";
     if (/(Handler|Listener|Consumer|Subscriber)$/.test(name)) return "EventHandler";
     if (/(Orchestrator|Saga)$/.test(name)) return "Orchestrator";
+    // Cache: cache-manager (@Inject(CACHE_MANAGER)) / Redis-Memcached istemcisi ya da isim.
+    // (DI_EDGE'deki Service→Cache=CACHES_IN satırını aktive eder — eskiden ölü kod.)
+    if (injectsCacheManager(cls) || injectsType(cls, ["Cache", "Redis", "RedisClient", "Cluster", "Memcached"]) || /Cache$/.test(name)) return "Cache";
+    // ExternalService: HttpService (@nestjs/axios) sarmalayıcısı ya da isim (Repository değil).
+    // (DI_EDGE'deki Service→ExternalService=REQUESTS satırını aktive eder.)
+    if (injectsType(cls, ["HttpService"]) || /(ApiClient|Client|ExternalService)$/.test(name)) return "ExternalService";
     // Varsayılan @Injectable → Service.
     return "Service";
   }

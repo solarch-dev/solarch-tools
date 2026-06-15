@@ -57,6 +57,12 @@ no terminal required.
   **"Overwrite all"** (reset to a fresh scaffold). The new files arrive with
   `@solarch:surgical` markers, so the Implementation section immediately shows
   what to fill in.
+- **Bind Entity to DTO** (view menu `…` / command palette): pick an Entity (or
+  Model) and a DTO, choose the fields, and Solarch keeps the DTO in sync with
+  the Entity. After that, **saving the Entity re-runs the binding
+  automatically** — the DTO's columns follow along, exactly like `solarch
+  watch`. Only property declarations are touched (each carries an
+  `@solarch:bound` marker); your hand-written code is never overwritten.
 - Identity and the project link are the same files the CLI uses
   (`~/.solarch/credentials`, `solarch.json`) — fully interchangeable with
   `solarch login` / `solarch link` in a terminal.
@@ -65,11 +71,20 @@ no terminal required.
 
 - **Problems tab:** every finding as a diagnostic attached to its file.
 - **Status bar:** `✓ Solarch: in sync` / `Solarch: 2E 5W` — click to open the side bar.
-- **Refresh on save:** saving a `.ts` file rescans with a 500ms debounce.
+- **Refresh on save:** saving a `.ts` file rescans with a 500ms debounce (and
+  re-runs any live bindings tied to that file).
 - **Cloud polling:** the revision is checked every 60s — the source of the
   update alert.
-- **Command palette:** `Solarch: Sign in` · `Link Project` · `Push` · `Pull` ·
-  `Refresh` · `Check Drift`.
+- **Offline:** if the cloud is unreachable, the view falls back to the last
+  pulled `.solarch/to-be.json` (rule checks paused) instead of going blank.
+- **Folder to track:** `Solarch: Select Folder to Track` (folder icon) picks
+  which project folder Solarch follows — a subfolder of a monorepo is fine, or
+  Browse to any folder. The choice is remembered per workspace.
+- **Switch Project:** the `⇄` toolbar button re-points the tracked folder at a
+  different Solarch project.
+- **Command palette:** `Solarch: Sign in` · `Link Project` · `Select Folder` ·
+  `Switch Project` · `Push` · `Pull` · `Refresh` · `Check Drift` ·
+  `Generate Code` · `Bind Entity to DTO`.
 
 ## Install
 
@@ -94,7 +109,8 @@ src/
 ├── extension.ts     # activate: TreeView, commands, save listener + 60s poll,
 │                    # Problems, status bar, viewsWelcome context
 ├── actions.ts       # login / link / pull / push — CLI engine in-process, native UI
-├── state.ts         # StateEngine: scan + cloud fetch (60s cache) + diff → GraphState
+├── binding.ts       # live binding: Entity→DTO field sync (bind + on-save)
+├── state.ts         # StateEngine: scan + cloud fetch (60s cache, offline fallback) + diff
 ├── revision-log.ts  # timeline + "update available" decision (workspaceState, pure)
 ├── tree.ts          # TreeDataProvider — status / Revisions / Drift sections
 └── shared.ts        # GraphState types + family colors

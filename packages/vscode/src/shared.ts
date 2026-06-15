@@ -119,13 +119,45 @@ export interface GraphStateOk {
   counts: { errors: number; warns: number; infos: number };
   implementation: ImplementationState;
   generatedAt: string;
+  /** Cloud erişilemediğinde son çekilen .solarch/to-be.json'dan kuruldu —
+   *  kural kataloğu yok, illegal-edge denetimi pasif. */
+  offline?: boolean;
+  /** Bu repoda Solarch'tan en az bir kez kod üretildi mi (generated.json var).
+   *  false ise yan sekme "Generate code" çağrısı gösterir. */
+  hasGenerated?: boolean;
 }
 
 export interface GraphStateError {
   ok: false;
-  reason: "notLinked" | "notLoggedIn" | "apiError" | "scanError";
+  /** noFolder: giriş yapıldı ama izlenecek proje klasörü seçilmedi. */
+  reason: "notLinked" | "notLoggedIn" | "apiError" | "scanError" | "noFolder";
   message: string;
   suggestion: string;
 }
 
 export type GraphState = GraphStateOk | GraphStateError;
+
+/** viewsWelcome ve menü when-clause'larını besleyen `solarch.status` context
+ *  anahtarı. ok (offline dahil) → "ok"; aksi halde hata gerekçesi. Saf — bu
+ *  eşleme her menü/welcome'ı kapı tuttuğu için ayrı test edilir. */
+export function contextKeyForState(state: GraphState): string {
+  return state.ok ? "ok" : state.reason;
+}
+
+/* ── cloud çağrı timeout'u ────────────────────────────────────────── */
+
+/** Cloud çağrılarının üst sınırı (ms). Aşılırsa istek reddedilir → UI sonsuza
+ *  asılmaz (refresh apiError/offline'a, action'lar hata toast'una düşer). */
+export const CLOUD_TIMEOUT_MS = 15_000;
+
+/** Promise'i süreyle sınırla. Zaman aşımında reddeder; arkadaki istek koşmaya
+ *  devam edebilir (abort yok) — amaç yalnız UI'ı bloke etmemek. */
+export function withTimeout<T>(p: Promise<T>, ms: number = CLOUD_TIMEOUT_MS, label = "operation"): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e: unknown) => { clearTimeout(t); reject(e instanceof Error ? e : new Error(String(e))); },
+    );
+  });
+}

@@ -20,7 +20,7 @@ type Item = vscode.TreeItem;
 const dot = (color: string): vscode.ThemeIcon =>
   new vscode.ThemeIcon("circle-filled", new vscode.ThemeColor(color));
 
-export class StateTreeProvider implements vscode.TreeDataProvider<Item> {
+export class StateTreeProvider implements vscode.TreeDataProvider<Item>, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<Item | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
 
@@ -31,6 +31,10 @@ export class StateTreeProvider implements vscode.TreeDataProvider<Item> {
     private readonly log: RevisionLog,
     private readonly trace: (msg: string) => void = () => {},
   ) {}
+
+  dispose(): void {
+    this.changed.dispose();
+  }
 
   setState(state: GraphState): void {
     this.state = state;
@@ -69,13 +73,18 @@ export class StateTreeProvider implements vscode.TreeDataProvider<Item> {
     if (!this.state.ok) {
       // Login/link eksikse liste BOŞ döner — package.json'daki viewsWelcome
       // (butonlu karşılama) devreye girer. Diğer hatalarda mesaj listede kalır.
-      if (this.state.reason === "notLoggedIn" || this.state.reason === "notLinked") return [];
+      if (this.state.reason === "notLoggedIn" || this.state.reason === "notLinked" || this.state.reason === "noFolder") return [];
       const err = new vscode.TreeItem(this.state.message);
       err.iconPath = new vscode.ThemeIcon("warning", new vscode.ThemeColor("charts.yellow"));
       err.tooltip = this.state.suggestion;
       const hint = new vscode.TreeItem(this.state.suggestion);
       hint.iconPath = new vscode.ThemeIcon("lightbulb");
-      return [err, hint];
+      // Toolbar aksiyonları (push/pull/generate) `status == 'ok'` ile kapılı —
+      // hata durumunda kaybolurlar. Listeden tek-tık kurtulma yolu bırak.
+      const retry = new vscode.TreeItem("Retry");
+      retry.iconPath = new vscode.ThemeIcon("refresh");
+      retry.command = { command: "solarch.refresh", title: "Retry" };
+      return [err, hint, retry];
     }
 
     if (!parent) return this.rootItems(this.state);
@@ -123,6 +132,27 @@ export class StateTreeProvider implements vscode.TreeDataProvider<Item> {
     drift.description = errors + warns === 0 ? "clean" : `${errors + warns} finding(s)`;
 
     const items = [status, revisions, drift];
+
+    // Cloud erişilemediğinde son çekilen graf gösteriliyor — üstte uyarı satırı.
+    if (state.offline) {
+      const banner = new vscode.TreeItem("Offline — last pulled graph");
+      banner.iconPath = new vscode.ThemeIcon("debug-disconnect", new vscode.ThemeColor("charts.yellow"));
+      banner.tooltip =
+        "The Solarch API was unreachable, so drift is computed against .solarch/to-be.json. " +
+        "Rule checks are paused until you reconnect (Refresh).";
+      items.unshift(banner);
+    }
+
+    // Henüz Solarch'tan kod üretilmediyse (generated.json yok) en üstte belirgin
+    // "üret" çağrısı — kullanıcı önce kodunu üretsin diye. Offline'da gizli.
+    if (!state.offline && !state.hasGenerated) {
+      const gen = new vscode.TreeItem("Generate code from the architecture");
+      gen.iconPath = new vscode.ThemeIcon("rocket", new vscode.ThemeColor("charts.green"));
+      gen.tooltip =
+        "No code has been generated from Solarch yet — create the deterministic scaffold from your architecture.";
+      gen.command = { command: "solarch.generate", title: "Generate Code" };
+      items.unshift(gen);
+    }
 
     // Implementation bölümü yalnız scaffold'lu repolarda görünür.
     const impl = state.implementation;

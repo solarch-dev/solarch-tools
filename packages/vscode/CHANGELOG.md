@@ -1,0 +1,51 @@
+# Changelog
+
+All notable changes to the Solarch VS Code extension are documented here.
+The format is based on [Keep a Changelog](https://keepachangelog.com/).
+
+## [0.8.0] — 2026-06-15
+
+### Added
+- **Folder selection** — `Solarch: Select Folder to Track` picks which project
+  folder Solarch tracks, including a subfolder of a monorepo (or Browse to any
+  folder). The choice is remembered per workspace.
+- **Switch Project** — a toolbar button (`⇄`) re-points the tracked folder at a
+  different Solarch project without hand-editing `solarch.json`.
+- **Generate prompt** — when a linked folder has no generated code yet, the view
+  shows a prominent "Generate code from the architecture" action at the top.
+- Onboarding now guides the order: Sign in → Choose a folder → Link a project
+  (new `noFolder` welcome state).
+
+## [0.7.0] — 2026-06-15
+
+### Added
+- **Live binding** — `Solarch: Bind Entity to DTO` and automatic field sync on
+  save, mirroring `solarch watch`. Editing a bound Entity now updates its DTO in
+  the editor.
+- **Check Drift** is now a one-click toolbar button (rescan + reveal Problems),
+  no longer Command Palette only.
+- **Offline drift** — when the cloud is unreachable, the view falls back to the
+  last pulled `.solarch/to-be.json` instead of going blank.
+- A clickable **Retry** row when the API or scan fails.
+- `.vscode/launch.json` for the F5 Extension Development Host loop.
+
+### Fixed
+- The packaged VSIX now actually contains the LICENSE file (the manifest
+  previously pointed at a path outside the package root).
+- The save-debounce timer is disposed on deactivate (no stray refresh after
+  teardown).
+- Clicking a finding whose file is missing now surfaces a warning instead of
+  silently doing nothing.
+- Cloud calls (refresh, pull, push plan, sign-in) now time out after 15s, so a
+  hung request can no longer freeze the view or a progress notification.
+
+### Changed
+- The bundle is now minified — the packaged extension is roughly half the size.
+- Added Marketplace metadata (repository, keywords, gallery banner) and
+  `onStartupFinished` activation so the status-bar entry point appears proactively.
+
+## [0.6.0]
+
+- Architecture sidebar with revision timeline, drift findings in the Problems
+  tab, push/pull/generate from the editor, and an implementation-progress
+  section — the Solarch CLI engine embedded in VS Code.

@@ -4,12 +4,14 @@
  *  + status bar + Problems. Her .ts kaydı 500ms debounce ile yeniden tarar;
  *  cloud 60sn'de bir yoklanır (revizyon arttıysa "Update available"). */
 
-import { accessSync } from "node:fs";
 import * as vscode from "vscode";
+import { readCredentials } from "@solarch/cli/lib";
 import { generateAction, linkAction, loginAction, pullAction, pushAction } from "./actions.js";
+import { bindAction, syncBindingsForSavedFile } from "./binding.js";
+import { resolveTrackedRoot, selectFolderAction } from "./folder.js";
 import { StateEngine } from "./state.js";
 import { RevisionLog, StateTreeProvider } from "./tree.js";
-import type { GraphState } from "./shared.js";
+import { contextKeyForState, type GraphState } from "./shared.js";
 
 const DEBOUNCE_MS = 500;
 const POLL_MS = 60_000;
@@ -22,7 +24,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // TreeView KOŞULSUZ kaydedilir — yoksa görünüm "no data provider" hatası
   // gösterir. Bağlı repo yoksa liste yönlendirme mesajı taşır.
-  let rootDir = findRoot();
+  let rootDir = resolveTrackedRoot(context.workspaceState);
   let engine: StateEngine | null = rootDir ? new StateEngine(rootDir) : null;
   log.appendLine(`[activate] rootDir: ${rootDir ?? "(none)"}`);
 
@@ -35,7 +37,7 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBar.command = "solarchState.focus";
   statusBar.text = "$(type-hierarchy) Solarch";
   statusBar.show();
-  context.subscriptions.push(treeView, diagnostics, statusBar);
+  context.subscriptions.push(tree, treeView, diagnostics, statusBar);
 
   let refreshing = false;
   let queued = false;
@@ -51,17 +53,25 @@ export function activate(context: vscode.ExtensionContext): void {
       // Kök her seferinde yeniden denenir — kullanıcı sonradan `solarch link`
       // çalıştırırsa eklenti restart istemeden toparlar.
       if (!engine) {
-        rootDir = findRoot();
+        rootDir = resolveTrackedRoot(context.workspaceState);
         engine = rootDir ? new StateEngine(rootDir) : null;
       }
       let state: GraphState;
       if (!engine) {
-        state = {
-          ok: false,
-          reason: "notLinked",
-          message: "No solarch.json found in this workspace.",
-          suggestion: "Link this repository to a Solarch project.",
-        };
+        // Kök yok: giriş yapılmadıysa önce "Sign in", yapıldıysa "klasör seç".
+        state = readCredentials()
+          ? {
+              ok: false,
+              reason: "noFolder",
+              message: "No project folder selected to track.",
+              suggestion: "Choose the folder Solarch should track.",
+            }
+          : {
+              ok: false,
+              reason: "notLoggedIn",
+              message: "Not signed in.",
+              suggestion: "Sign in with an API key from Solarch → Settings → API Keys.",
+            };
       } else {
         // Beklenmedik hata görünmez kalmasın — listede gerekçesiyle gösterilir.
         state = await engine.refresh({ forceCloud }).catch((e: Error) => ({
@@ -78,7 +88,7 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       tree.setState(state);
       // viewsWelcome (login/link butonları) hangi durumda görüneceğini buradan öğrenir.
-      void vscode.commands.executeCommand("setContext", "solarch.status", state.ok ? "ok" : state.reason);
+      void vscode.commands.executeCommand("setContext", "solarch.status", contextKeyForState(state));
       publish(state, rootDir ?? "", diagnostics, statusBar);
     } finally {
       refreshing = false;
@@ -97,10 +107,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("solarch.acknowledge", () => tree.acknowledge()),
     vscode.commands.registerCommand("solarch.openFinding", (file: string, line?: number) => {
-      void vscode.window.showTextDocument(vscode.Uri.file(`${rootDir}/${file}`), {
-        preview: true,
-        ...(line ? { selection: new vscode.Range(line - 1, 0, line - 1, 0) } : {}),
-      });
+      if (!rootDir) return;
+      const uri = vscode.Uri.joinPath(vscode.Uri.file(rootDir), file);
+      void vscode.window
+        .showTextDocument(uri, {
+          preview: true,
+          ...(line ? { selection: new vscode.Range(line - 1, 0, line - 1, 0) } : {}),
+        })
+        .then(undefined, (e: unknown) => {
+          void vscode.window.showWarningMessage(
+            `Solarch: couldn't open ${file} — ${e instanceof Error ? e.message : "file not found"}. ` +
+              "It may exist only in the cloud graph (not yet in code).",
+          );
+        });
     }),
     // CLI motoru doğrudan arka planda — terminal yok, native arayüz.
     vscode.commands.registerCommand("solarch.login", async () => {
@@ -119,8 +138,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("solarch.pull", async () => {
       if (!rootDir) return;
-      await pullAction(rootDir);
-      await refresh(true);
+      if (await pullAction(rootDir)) await refresh(true);
     }),
     vscode.commands.registerCommand("solarch.push", async () => {
       if (!rootDir) return;
@@ -133,6 +151,31 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       if (await generateAction(rootDir)) await refresh(false);
     }),
+    vscode.commands.registerCommand("solarch.bind", async () => {
+      if (!rootDir) {
+        void vscode.window.showWarningMessage("Solarch: open a linked folder first.");
+        return;
+      }
+      if (await bindAction(rootDir)) await refresh(false);
+    }),
+    vscode.commands.registerCommand("solarch.selectFolder", async () => {
+      const chosen = await selectFolderAction(context.workspaceState);
+      if (chosen) {
+        engine = null; // izlenen kök değişti — yeniden çözülsün
+        await refresh(true);
+      }
+    }),
+    vscode.commands.registerCommand("solarch.switchProject", async () => {
+      if (!rootDir) {
+        void vscode.window.showWarningMessage("Solarch: select a folder to track first.");
+        return;
+      }
+      // link akışı klasörü tekrar sormaz — aynı kökte projeyi yeniden seçtirir.
+      if (await linkAction(rootDir)) {
+        engine = null;
+        await refresh(true);
+      }
+    }),
   );
 
   // Kayıtta debounce'lu yeniden tarama — yalnız bu repo'nun .ts dosyaları.
@@ -143,6 +186,8 @@ export function activate(context: vscode.ExtensionContext): void {
       const isTs = doc.fileName.endsWith(".ts") && rootDir !== undefined && doc.fileName.startsWith(rootDir);
       const isLink = doc.fileName.endsWith("solarch.json");
       if (!isTs && !isLink) return;
+      // Canlı binding: kaydedilen Entity'ye bağlı DTO'ları senkronla (watch aynası).
+      if (isTs && rootDir) syncBindingsForSavedFile(rootDir, doc.fileName);
       clearTimeout(timer);
       timer = setTimeout(() => void refresh(isLink), DEBOUNCE_MS);
     }),
@@ -151,6 +196,9 @@ export function activate(context: vscode.ExtensionContext): void {
       void refresh(true);
     }),
   );
+  // Bekleyen debounce timer'ı teardown'da iptal et — listener dispose edilse de
+  // ≤500ms önce kurulmuş bir timer fire edip yok edilmiş nesnelere dokunabilir.
+  context.subscriptions.push({ dispose: () => { if (timer) clearTimeout(timer); } });
 
   // Periyodik cloud yoklaması — başka biri canvas'ta değişiklik yaptıysa
   // revizyon artar, yan sekme "Update available" gösterir.
@@ -161,25 +209,12 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // subscriptions üzerinden temizleniyor
+  // Tüm tek-tek kaynaklar (output channel, treeView, diagnostics, statusBar,
+  // komutlar, save listener, poll interval ve debounce timer) context.subscriptions
+  // üzerinden dispose ediliyor — burada ek temizlik gerekmiyor.
 }
 
 /* ── yardımcılar ─────────────────────────────────────────────────── */
-
-/** solarch.json içeren ilk workspace klasörü. */
-function findRoot(): string | undefined {
-  for (const folder of vscode.workspace.workspaceFolders ?? []) {
-    const candidate = vscode.Uri.joinPath(folder.uri, "solarch.json");
-    try {
-      // Multi-root'ta solarch.json içeren ilk klasör kazanır.
-      accessSync(candidate.fsPath);
-      return folder.uri.fsPath;
-    } catch {
-      continue;
-    }
-  }
-  return undefined;
-}
 
 /** GraphState'i Problems + status bar'a yay (yan sekmeyi tree.setState besledi). */
 function publish(
@@ -222,10 +257,13 @@ function publish(
   statusBar.text =
     (errors === 0 && warns === 0
       ? "$(check) Solarch: in sync"
-      : `$(type-hierarchy) Solarch: ${errors}E ${warns}W`) + implSuffix;
+      : `$(type-hierarchy) Solarch: ${errors}E ${warns}W`) +
+    implSuffix +
+    (state.offline ? "  $(debug-disconnect)" : "");
   statusBar.tooltip =
     `${state.projectName} — revision ${state.graphRevision}\n${errors} error(s), ${warns} warning(s).` +
     (impl.total > 0 ? `\n${impl.filled}/${impl.total} generated member(s) implemented.` : "") +
+    (state.offline ? `\nOffline — drift computed against the last pulled graph; rule checks paused.` : "") +
     `\nClick to open the Solarch view.`;
   statusBar.backgroundColor = errors > 0 ? new vscode.ThemeColor("statusBarItem.errorBackground") : undefined;
 }

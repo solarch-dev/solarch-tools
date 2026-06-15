@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "n
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-export const DEFAULT_API_URL = "https://app.solarch.dev/api/v1";
+export const DEFAULT_API_URL = "https://api.solarch.dev/api/v1";
 
 /* ── identity (~/.solarch/credentials) ───────────────────────────── */
 

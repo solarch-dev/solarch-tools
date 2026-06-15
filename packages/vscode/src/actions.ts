@@ -30,6 +30,7 @@ import {
   writeProjectConfig,
   type PushPlan,
 } from "@solarch/cli/lib";
+import { CLOUD_TIMEOUT_MS, withTimeout } from "./shared.js";
 
 /* ── login ───────────────────────────────────────────────────────── */
 
@@ -67,7 +68,7 @@ export async function loginAction(): Promise<boolean> {
 
   const creds = { apiUrl, apiKey: key.trim() };
   try {
-    const projects = await new SolarchApi(creds).listProjects();
+    const projects = await withTimeout(new SolarchApi(creds).listProjects(), CLOUD_TIMEOUT_MS, "sign-in");
     writeCredentials(creds);
     void vscode.window.showInformationMessage(
       `Solarch: signed in — ${projects.length} project(s) on your account.`,
@@ -125,27 +126,34 @@ export async function linkAction(rootDir: string): Promise<boolean> {
 
 /* ── pull ────────────────────────────────────────────────────────── */
 
-export async function pullAction(rootDir: string): Promise<void> {
+export async function pullAction(rootDir: string): Promise<boolean> {
   const config = readProjectConfig(rootDir);
   if (!config?.projectId) {
     void vscode.window.showWarningMessage("Solarch: link a project first.");
-    return;
+    return false;
   }
-  await vscode.window.withProgress(
-    { location: vscode.ProgressLocation.Notification, title: "Solarch: pulling To-Be graph…" },
-    async () => {
-      const api = SolarchApi.fromStoredCredentials();
-      const graph = await api.getGraph(config.projectId);
-      const p = toBePath(rootDir);
-      mkdirSync(dirname(p), { recursive: true });
-      writeFileSync(p, JSON.stringify(graph, null, 2) + "\n");
-      void vscode.window.showInformationMessage(
-        `Solarch: pulled "${graph.project.name}" — ${graph.counts.nodes} node(s), ${graph.counts.edges} edge(s), rev ${graph.graphRevision}.`,
-      );
-    },
-  ).then(undefined, (e: Error) => {
-    void vscode.window.showErrorMessage(`Solarch: pull failed — ${e.message}`);
-  });
+  return await vscode.window
+    .withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Solarch: pulling To-Be graph…" },
+      async () => {
+        const api = SolarchApi.fromStoredCredentials();
+        const graph = await withTimeout(api.getGraph(config.projectId), CLOUD_TIMEOUT_MS, "pull");
+        const p = toBePath(rootDir);
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, JSON.stringify(graph, null, 2) + "\n");
+        void vscode.window.showInformationMessage(
+          `Solarch: pulled "${graph.project.name}" — ${graph.counts.nodes} node(s), ${graph.counts.edges} edge(s), rev ${graph.graphRevision}.`,
+        );
+        return true;
+      },
+    )
+    .then(
+      (ok) => ok,
+      (e: Error) => {
+        void vscode.window.showErrorMessage(`Solarch: pull failed — ${e.message}`);
+        return false;
+      },
+    );
 }
 
 /* ── generate ────────────────────────────────────────────────────── */
@@ -215,7 +223,11 @@ interface PreparedPush {
 }
 
 async function preparePlan(api: SolarchApi, rootDir: string, projectId: string): Promise<PreparedPush> {
-  const [graph, rules] = await Promise.all([api.getGraph(projectId), api.getRules()]);
+  const [graph, rules] = await withTimeout(
+    Promise.all([api.getGraph(projectId), api.getRules()]),
+    CLOUD_TIMEOUT_MS,
+    "push plan",
+  );
   const asIs = runScan(rootDir);
   const diff = diffGraphs(asIs, graph, rules, readMatchCache(rootDir));
   writeMatchCache(rootDir, diff.cache);
