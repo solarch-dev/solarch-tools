@@ -98,8 +98,9 @@ program
   .description("Drift check: compare the code (As-Is) with the Solarch architecture (To-Be)")
   .option("--json", "Machine-readable output")
   .option("--ci", "GitHub Actions annotation output (errors fail the job)")
+  .option("--sarif", "SARIF 2.1.0 output for GitHub code-scanning")
   .option("--to-be <file>", "Offline mode: read the To-Be graph from a JSON file")
-  .action(async (opts: { json?: boolean; ci?: boolean; toBe?: string }) => {
+  .action(async (opts: { json?: boolean; ci?: boolean; sarif?: boolean; toBe?: string }) => {
     await diffCommand({ rootDir: rootDir(), ...opts });
   });
 

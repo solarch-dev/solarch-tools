@@ -3,13 +3,15 @@ import pc from "picocolors";
 import { SolarchApi, type CloudGraph, type RuleCatalog } from "../api.js";
 import { readMatchCache, readProjectConfig, writeMatchCache } from "../config.js";
 import { diffGraphs } from "../diff/engine.js";
-import { renderCi, renderJson, renderTty } from "../diff/report.js";
+import { renderCi, renderJson, renderSarif, renderTty } from "../diff/report.js";
 import { runScan } from "./scan.js";
 
 export interface DiffOptions {
   rootDir: string;
   json?: boolean;
   ci?: boolean;
+  /** SARIF 2.1.0 output → GitHub code-scanning. */
+  sarif?: boolean;
   /** Offline mode: read To-Be graph from file instead of API. */
   toBe?: string;
 }
@@ -49,6 +51,7 @@ export async function diffCommand(opts: DiffOptions): Promise<void> {
 
   // 4. Output + exit code (errors → 1 → CI blocks merge).
   if (opts.json) console.log(renderJson(result));
+  else if (opts.sarif) console.log(renderSarif(result));
   else if (opts.ci) console.log(renderCi(result));
   else console.log(renderTty(result));
 

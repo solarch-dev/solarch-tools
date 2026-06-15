@@ -62,3 +62,46 @@ export function renderCi(result: DiffResult): string {
   lines.push(`Drift check: ${errors} error(s), ${warns} warning(s), ${infos} info — ${result.matched} matched.`);
   return lines.join("\n");
 }
+
+/** SARIF 2.1.0 — GitHub code-scanning ingests this (findings appear in the PR
+ *  "Files changed" gutter + the Security → Code scanning tab). Built by hand (no
+ *  dependency). Locations are file-level for now; line-level needs As-Is line
+ *  plumbing (AsIsNode/AsIsEdge carry `file` only) — a follow-on. */
+export function renderSarif(result: DiffResult): string {
+  const levelOf = (s: Severity): "error" | "warning" | "note" =>
+    s === "error" ? "error" : s === "warn" ? "warning" : "note";
+
+  // Unique rule ids → tool.driver.rules (Security tab shows the rule list).
+  const rules = [...new Set(result.findings.map((f) => f.code))].map((id) => ({
+    id,
+    name: id,
+    shortDescription: { text: id },
+  }));
+
+  const results = sorted(result.findings).map((f) => {
+    const text = f.suggestion ? `${f.message} → ${f.suggestion}` : f.message;
+    const out: Record<string, unknown> = {
+      ruleId: f.code,
+      level: levelOf(f.severity),
+      message: { text },
+    };
+    if (f.file) {
+      out.locations = [{ physicalLocation: { artifactLocation: { uri: f.file } } }];
+    }
+    return out;
+  });
+
+  const sarif = {
+    $schema: "https://json.schemastore.org/sarif-2.1.0.json",
+    version: "2.1.0",
+    runs: [
+      {
+        tool: {
+          driver: { name: "Solarch", informationUri: "https://solarch.dev", rules },
+        },
+        results,
+      },
+    ],
+  };
+  return JSON.stringify(sarif, null, 2);
+}
