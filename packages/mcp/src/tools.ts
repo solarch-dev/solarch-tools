@@ -14,7 +14,6 @@ import {
   type NodeKind,
 } from "@solarch/ast-core";
 import {
-  createCompleter,
   diffGraphs,
   evaluateEdge,
   fillProject,
@@ -332,7 +331,7 @@ export async function fillSurgicalRegion(rootDir: string, input: FillToolInput):
   }
   return fillProject({
     rootDir,
-    complete: createCompleter(config),
+    llm: config,
     region: input.all ? undefined : input.region,
     maxAttempts: input.attempts,
   });

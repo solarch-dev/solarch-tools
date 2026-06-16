@@ -28,7 +28,7 @@
 
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { ClassDeclaration, EnumDeclaration, MethodDeclaration, Project, SyntaxKind } from "ts-morph";
+import { ClassDeclaration, EnumDeclaration, MethodDeclaration, Project, SyntaxKind, ts } from "ts-morph";
 
 export type SurgicalStatus = "skeleton" | "filled";
 export type FilledBy = "ai" | "human";
@@ -89,7 +89,12 @@ function checkContract(
   // Beyan "this.ordersRepository" ya da "ordersRepository" biçiminde olabilir
   // (emitter this. önekiyle yazar) — önek düşürülerek karşılaştırılır.
   if (declaredDeps) {
-    const allowed = new Set(declaredDeps.map((d) => canon(d.replace(/^this\./, ""))));
+    // Beyan bir çağrı-İPUCU olabilir (örn. ExternalService emitter "this.http.post,
+    // this.baseUrl" yazar). deps sözleşmesi HANGİ enjekte bağımlılık'ı kapsar — metodu
+    // değil; kök tanımlayıcıyı al (`this.http.post` → `http`, `this.authHeaders()` →
+    // `authHeaders`) ki gövdenin `this.http.post(...)` çağrısı (taban erişimi `this.http`)
+    // bildirilmiş sayılsın.
+    const allowed = new Set(declaredDeps.map((d) => canon(d.replace(/^this\./, "").split(/[.([]/)[0]!)));
     const used = new Set<string>();
     for (const access of body.getDescendantsOfKind(SyntaxKind.PropertyAccessExpression)) {
       if (access.getExpression().getKind() !== SyntaxKind.ThisKeyword) continue;
@@ -116,6 +121,17 @@ function checkContract(
     for (const name of thrown) {
       if (!allowed.has(canon(name))) {
         violations.push(`throws undeclared "${name}" — declared throws: ${declaredThrows.join(", ")}`);
+      }
+    }
+    // throws-realization: bildirilen her exception için gövdede erişilebilir bir
+    // `throw new X` olmalı. Deklare edilip hiç fırlatılmayan = eksik gerçekleme
+    // (örn. `throws: DatabaseException` deklare edip repo çağrısını try/catch'e
+    // sarmadan ham hata sızdırmak). Bu kural ESKİDEN prompt'taydı → artık koddan.
+    const thrownCanon = new Set([...thrown].map(canon));
+    for (const decl of declaredThrows) {
+      if (canon(decl).length === 0) continue;
+      if (!thrownCanon.has(canon(decl))) {
+        violations.push(`declared throw "${decl}" is never reached — add the code path that throws it (e.g. wrap the dependency/repository call in try/catch and rethrow ${decl})`);
       }
     }
   }
@@ -215,6 +231,19 @@ export interface WriteBodyResult {
   error?: string;
 }
 
+/** Gövde kodu geçerli bir TS deyim-bloğu mu? Değilse ilk sözdizimi hatasının
+ *  mesajını döner (yoksa null). Yalnız SÖZDİZİMİ denetlenir: `await`/`this`
+ *  geçerli sayılsın diye async fonksiyona sarılır; tanımsız ad (NotFoundException
+ *  vb.) burada hata DEĞİLDİR — onu tip denetimi yakalar. Amaç: LLM'in gövdeye
+ *  sızdırdığı prose'u ("So I'll output:") yazımdan önce reddetmek. */
+function bodySyntaxError(bodyCode: string): string | null {
+  const src = ts.createSourceFile("_probe.ts", `async function _f() {\n${bodyCode}\n}`, ts.ScriptTarget.Latest, false);
+  const diags = (src as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
+  if (diags.length === 0) return null;
+  const d = diags[0]!;
+  return ts.flattenDiagnosticMessageText(d.messageText, "\n");
+}
+
 /** İşaretli bir iskelet metodun gövdesini `bodyCode` ile değiştir.
  *
  *  - Marker yorum bloğunu (`// @solarch:surgical` + açıklama/throws/deps) KORUR.
@@ -251,6 +280,13 @@ export function writeSurgicalBody(
   }
   if (markerLines.length === 0) return { ok: false, member, error: `region "${member}" has no surgical marker` };
 
+  // LLM bazen gövdeye akıl-yürütme/önyazı sızdırır ("So I'll output:") → geçersiz TS.
+  // Gövdeyi YAZMADAN önce sözdizimini doğrula; bozuksa ihlal olarak dön (çağıran retry
+  // eder, başarısız deneme stub'ı bozmaz). Yalnız SÖZDİZİMİ — tip çözümü yok (await/this
+  // geçerli olsun diye async fonksiyona sarılır; tanımsız adlar burada hata değildir).
+  const syntaxErr = bodySyntaxError(bodyCode.trim());
+  if (syntaxErr) return { ok: true, member, violations: [`generated body is not valid TypeScript (the model leaked prose — output raw statements only): ${syntaxErr}`] };
+
   const filledSig = `// @solarch:filled by=ai at=${filledAtIso}`;
   method.setBodyText([...markerLines, filledSig, "", bodyCode.trim()].join("\n"));
 
@@ -273,18 +309,42 @@ export function fixMissingImportsInFiles(rootDir: string, relFiles: string[]): {
       return { fixed: [] };
     }
   }
+  const srcRoot = resolve(rootDir, "src");
   const fixed: string[] = [];
   for (const rel of relFiles) {
     const sf = project.getSourceFile(resolve(rootDir, rel));
     if (!sf) continue;
     try {
-      // Çözülmeyen GÖRELİ import'ları (yanlış yol — örn. `../../` yerine `../`) kaldır;
-      // ardından fixMissingImports doğru yolla yeniden ekler. Üçüncü-parti (./'sız) kalır.
       for (const imp of sf.getImportDeclarations()) {
         const spec = imp.getModuleSpecifierValue();
-        if (spec.startsWith(".") && !imp.getModuleSpecifierSourceFile()) imp.remove();
+        // (a) Çözülmeyen GÖRELİ import (yanlış yol, örn. `../../` vs `../`) → kaldır,
+        //     fixMissingImports doğrusuyla ekler.
+        if (spec.startsWith(".") && !imp.getModuleSpecifierSourceFile()) {
+          imp.remove();
+          continue;
+        }
+        // (b) baseUrl-köklü YEREL import (örn. `src/common/...`): tsc çözer ama jest
+        //     çözemez ve dosya geri kalanı göreli. Kaldır → relative tercihiyle yeniden eklensin.
+        const target = imp.getModuleSpecifierSourceFile();
+        if (!spec.startsWith(".") && target && target.getFilePath().startsWith(srcRoot)) {
+          imp.remove();
+          continue;
+        }
+        // (c) jest global'leri (describe/it/expect/jest/beforeEach) ASLA import edilmez —
+        //     @types/jest onları global verir. fixMissingImports bunları `node:test`'ten
+        //     çekmeye meyleder; çekerse jest "0 test" görür + TAP üretir. Bu import'ları sök.
+        if (spec === "node:test" || spec === "@jest/globals") {
+          imp.remove();
+          continue;
+        }
       }
-      sf.fixMissingImports();
+      // Yeni import'lar GÖRELİ yolla eklensin (jest ts-jest baseUrl'i onurlandırmaz).
+      sf.fixMissingImports(undefined, { importModuleSpecifierPreference: "relative" });
+      // fixMissingImports yine node:test çekmiş olabilir → son bir süpürme.
+      for (const imp of sf.getImportDeclarations()) {
+        const spec = imp.getModuleSpecifierValue();
+        if (spec === "node:test" || spec === "@jest/globals") imp.remove();
+      }
       fixed.push(rel);
     } catch {
       /* dil servisi çözemezse atla */

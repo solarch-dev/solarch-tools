@@ -100,11 +100,13 @@ describe("surgical marker extraction", () => {
     expect(byMember.get("closeAccount")?.violations).toBeUndefined();
   });
 
-  it("beyan dışı dep ve throw ihlal olarak raporlanır", () => {
+  it("beyan dışı dep ve throw + gerçeklenmeyen throws ihlal olarak raporlanır", () => {
     const v = byMember.get("suspendAccount")?.violations ?? [];
-    expect(v).toHaveLength(2);
-    expect(v.some((x) => x.includes('this.mailService'))).toBe(true);
-    expect(v.some((x) => x.includes("UnknownBillingException"))).toBe(true);
+    expect(v).toHaveLength(3);
+    expect(v.some((x) => x.includes('this.mailService'))).toBe(true); // beyan dışı dep
+    expect(v.some((x) => x.includes("UnknownBillingException"))).toBe(true); // beyan dışı throw
+    // DuplicateAccountException deklare ama gövdede fırlatılmıyor → throws-realization ihlali
+    expect(v.some((x) => /never reached/.test(x) && x.includes("DuplicateAccountException"))).toBe(true);
   });
 
   it("özet sayaçları doğru toplar", () => {

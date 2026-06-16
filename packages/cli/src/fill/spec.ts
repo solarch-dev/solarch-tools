@@ -1,92 +1,83 @@
-/** Layer 4 — behavioral test generation.
+/** Layer 4 — behavioral test generation, verification-driven.
  *
- *  After the method bodies are filled, the generated .spec.ts files are still
- *  stubs asserting NOT_IMPLEMENTED (they break once filled) with incomplete mocks.
- *  This replaces a filled service's spec with a REAL jest spec: mock every injected
- *  dependency, test each method's happy path and its declared error paths against
- *  the contract — so the filled code is verified, not assumed. The spec is grounded
- *  in the same API surface as the fill, so the test cannot invent dep methods. */
+ *  After the bodies are filled, the stub .spec.ts files (NOT_IMPLEMENTED asserts +
+ *  incomplete mocks) break. This replaces a filled service's spec with a REAL jest
+ *  spec that the model VERIFIES by running it: the model calls the `run_tests` tool,
+ *  the system runs jest on the spec and feeds the actual failures back, and the model
+ *  iterates until jest is green. No "write a good test" prose — the running test is
+ *  the judge. The spec is grounded in the same API surface as the fill, so it cannot
+ *  invent dependency methods or enum members. */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { fixMissingImportsInFiles, readDeclaredSurface } from "@solarch/ast-core";
-import type { ChatMessage, CompleteFn } from "./llm.js";
+import { readDeclaredSurface } from "@solarch/ast-core";
+import type { LlmConfig } from "./llm.js";
 import { stripCodeFences } from "./llm.js";
-import { runJestFile } from "./verify.js";
+import { runToolAgent, type AgentTool, type ChatTransport, type ToolResolver } from "./agent.js";
+import { writeSpecAndRun } from "./verify.js";
 
-const SYSTEM = [
-  "You are a senior NestJS engineer writing a JEST unit test (.spec.ts) for the service shown below.",
-  "Return ONLY the complete .spec.ts file content — no markdown fences, no prose.",
-  "Rules (strict):",
-  "  - JEST GLOBALS: describe, it, expect, beforeEach, jest are GLOBAL — NEVER import them",
-  "    (no `import ... from \"node:test\"`, no `import ... from \"@jest/globals\"`). Just use them.",
-  "  - IMPORTS: import the service class from its path; for every OTHER symbol you reference, COPY the",
-  "    exact import line from the service file above — do NOT invent or guess a path, and do NOT import",
-  "    any type the service file does not import. If a symbol is not imported by the service, do not use it.",
-  "  - Mock EVERY injected constructor dependency. For each dependency create an object whose",
-  "    methods are jest.fn(); include ONLY methods that appear in the API surface — never invent one.",
-  "  - Construct the service directly: `new ServiceName(mockDepA as any, mockDepB as any)`.",
-  "  - For EACH public method write a `describe` with: (1) a happy-path `it` that arranges the mocks",
-  "    to succeed, calls the method, and asserts the returned value's shape AND that the right",
-  "    dependency methods were called; (2) one `it` per exception in the method's `// throws:` contract",
-  "    that arranges the triggering condition and asserts `await expect(promise).rejects.toThrow(XException)`.",
-  "  - Test the BEHAVIOUR in the `// <description>` and `// throws:` markers — do not merely mirror the impl.",
-  "    Use the EXACT method names, parameter shapes, enum VALUES and exception classes from the API surface.",
-  "  - TEST DATA: build input objects as plain valid objects — every field gets a value of the correct type.",
-  "    For an enum-typed field use the EXACT enum VALUE string from the API surface (e.g. \"in_progress\", NOT",
-  "    \"IN_PROGRESS\" and NOT an invented value like \"electrical\"). Never use an `as SomeDto` cast to force an",
-  "    invalid shape — construct a fully valid object instead.",
-  "  - The spec MUST compile under tsc strict and pass jest with no real DB/network.",
+const SPEC_SYSTEM = [
+  "You write a JEST unit test (.spec.ts) for the service shown, then VERIFY it with the run_tests tool.",
+  "Call run_tests with the COMPLETE .spec.ts file content; it runs jest and returns {ok:true} or the jest",
+  "failure output. The ONLY way to finish is a run_tests that returns ok — never answer in prose. Read the",
+  "jest output, fix the spec, and call run_tests again.",
+  "Structure: import the service from its path; mock EVERY injected constructor dependency (each used method a",
+  "jest.fn()); construct the service directly with `new ServiceName(mockA as any, mockB as any)`; write one",
+  "happy-path test per public method (assert the returned value's shape AND that the right dependency methods",
+  "were called), plus one test per exception in that method's `// throws:` contract.",
+  "describe / it / expect / jest / beforeEach are GLOBAL — never import them (no node:test, no @jest/globals).",
+  "The API surface block is the ground truth for method names, enum members and exception classes; jest will",
+  "reject anything invented. When a test targets a specific error, arrange the mocks and input so execution",
+  "actually REACHES that error — if you assert the wrong exception, the jest output shows which one was really",
+  "thrown, so use it to fix the precondition.",
 ].join("\n");
 
-export function buildSpecPrompt(
-  serviceFileContent: string,
-  apiSurface: string,
-  importPath: string,
-  priorJestError?: string,
-): ChatMessage[] {
-  const lines = [
+function buildSpecUser(serviceFileContent: string, apiSurface: string, importPath: string): string {
+  return [
     `Service file (import the class from "${importPath}"):`,
     "```ts",
     serviceFileContent,
     "```",
     "",
-    "API surface — the ONLY methods/enum values/exception constructors that exist:",
+    "API surface — the ONLY methods / enum members / exception constructors that exist:",
     apiSurface || "(none resolved)",
-  ];
-  if (priorJestError) {
-    lines.push(
-      "",
-      "Your previous spec FAILED jest. Fix it (often a wrong import path or importing jest from node:test):",
-      priorJestError.slice(0, 1500),
-    );
-  }
-  lines.push("", "Write the complete .spec.ts now.");
-  return [
-    { role: "system", content: SYSTEM },
-    { role: "user", content: lines.join("\n") },
-  ];
+    "",
+    "Write the .spec.ts and verify it by calling run_tests.",
+  ].join("\n");
 }
+
+const RUN_TESTS_TOOL: AgentTool = {
+  name: "run_tests",
+  description:
+    "Write the given .spec.ts content to disk and run jest on it. Returns {ok:true} when every test passes, " +
+    "otherwise {ok:false, jest:'<failure output>'}. Fix the spec from the failure output and call again.",
+  parameters: {
+    type: "object",
+    properties: { code: { type: "string", description: "The complete .spec.ts file content." } },
+    required: ["code"],
+    additionalProperties: false,
+  },
+};
 
 export interface SpecResult {
   file: string; // üretilen .spec.ts (göreli)
   status: "written" | "error";
-  /** jest'i geçti mi (spec-repair sonrası). */
+  /** jest'i geçti mi (ajan yeşile ulaştı mı). */
   passed?: boolean;
-  attempts?: number;
+  rounds?: number;
   error?: string;
 }
 
-/** Dolu bir servis için gerçek davranış spec'i üret + stub'ı ez; jest'e karşı
- *  ≤maxAttempts kez onar (hata geri beslenir). skipRun=true → yalnız yaz (testte mock). */
+/** Dolu bir servis için gerçek davranış spec'i üret + jest'le DOĞRULA (ajan döngüsü).
+ *  Model run_tests çağırır; sistem spec'i yazıp jest koşar, hatayı geri besler; yeşile
+ *  ya da tur-tavanına kadar döner. Son yazılan spec diskte kalır (dürüst residüel). */
 export async function generateSpecForService(
   rootDir: string,
   serviceRelFile: string,
-  complete: CompleteFn,
-  opts: { maxAttempts?: number; skipRun?: boolean } = {},
+  llm: LlmConfig,
+  opts: { maxAttempts?: number; transport?: ChatTransport } = {},
 ): Promise<SpecResult> {
   const specRel = serviceRelFile.replace(/\.ts$/, ".spec.ts");
-  const maxAttempts = opts.maxAttempts ?? 2;
   let content: string;
   let surface: string;
   try {
@@ -97,27 +88,34 @@ export async function generateSpecForService(
   }
   const importPath = `./${basename(serviceRelFile).replace(/\.ts$/, "")}`;
 
-  let priorError: string | undefined;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let spec: string;
-    try {
-      spec = stripCodeFences(await complete(buildSpecPrompt(content, surface, importPath, priorError)));
-    } catch (e) {
-      return { file: specRel, status: "error", attempts: attempt, error: (e as Error).message };
+  let passed = false;
+  const resolve: ToolResolver = async (call) => {
+    const code = typeof call.args?.code === "string" ? call.args.code : "";
+    if (!code.trim()) return { content: JSON.stringify({ ok: false, jest: "empty spec — pass the full .spec.ts content in `code`" }) };
+    // Spec'i yaz + eksik/yanlış import'ları (relative + node:test-strip) düzelt + jest koş.
+    const v = writeSpecAndRun(rootDir, specRel, stripCodeFences(code));
+    if (v.ok) {
+      passed = true;
+      return { content: JSON.stringify({ ok: true }), done: true, result: specRel };
     }
-    writeFileSync(join(rootDir, specRel), spec);
-    // Yanlış/eksik import'ları TS dil servisiyle düzelt (AI yol derinliğini şaşırabilir).
-    if (!opts.skipRun) {
-      try {
-        fixMissingImportsInFiles(rootDir, [specRel]);
-      } catch {
-        /* en iyi çaba */
-      }
-    }
-    if (opts.skipRun) return { file: specRel, status: "written", attempts: attempt };
-    const v = runJestFile(rootDir, specRel);
-    if (v.ok) return { file: specRel, status: "written", passed: true, attempts: attempt };
-    priorError = v.output;
+    return { content: JSON.stringify({ ok: false, jest: v.output.slice(0, 2500) }) };
+  };
+
+  let agent;
+  try {
+    agent = await runToolAgent({
+      config: llm,
+      transport: opts.transport,
+      system: SPEC_SYSTEM,
+      user: buildSpecUser(content, surface, importPath),
+      tools: [RUN_TESTS_TOOL],
+      resolve,
+      forceFirstTool: "run_tests",
+      maxRounds: opts.maxAttempts ?? 4,
+      timeoutMs: 120_000,
+    });
+  } catch (e) {
+    return { file: specRel, status: "error", error: (e as Error).message };
   }
-  return { file: specRel, status: "written", passed: false, attempts: maxAttempts, error: priorError?.slice(0, 400) };
+  return { file: specRel, status: "written", passed, rounds: agent.rounds };
 }

@@ -1,15 +1,30 @@
-/** Surgical fill — pure helpers + orchestrator contract loop with a mock LLM
- *  (no network, no tsc/test gates). */
+/** Surgical fill — pure helpers + the tool-calling agent loop driven by a SCRIPTED
+ *  transport (no network). Correctness lives in the validators (ast-core) and real
+ *  tsc/jest; here we test the agent mechanics + the prompt context, offline. */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { llmConfigFromEnv, stripCodeFences } from "../src/fill/llm.js";
-import { buildFillPrompt } from "../src/fill/prompt.js";
+import { buildFillUser, FILL_SYSTEM } from "../src/fill/prompt.js";
+import { runToolAgent, type AgentMessage, type ChatTransport, type ToolResolver } from "../src/fill/agent.js";
 import { fillRegion, selectSkeletons } from "../src/fill/orchestrator.js";
-import { buildSpecPrompt, generateSpecForService } from "../src/fill/spec.js";
+import { generateSpecForService } from "../src/fill/spec.js";
 import type { SurgicalMember } from "@solarch/ast-core";
+
+const DUMMY_LLM = { baseUrl: "https://x/v1", model: "test", apiKey: "k" };
+
+/** Her turda sıradaki `code`'u verilen tool adıyla çağıran sahte transport.
+ *  Liste biterse son code'u tekrarlar (yeşilleşmeyen denemeyi simüle eder). */
+function scriptedTransport(codes: string[], toolName: string): ChatTransport {
+  let i = 0;
+  return async (): Promise<AgentMessage> => {
+    const code = codes[Math.min(i, codes.length - 1)] ?? "";
+    i += 1;
+    return { role: "assistant", content: null, tool_calls: [{ id: `c${i}`, type: "function", function: { name: toolName, arguments: JSON.stringify({ code }) } }] };
+  };
+}
 
 describe("stripCodeFences", () => {
   it("```ts fence'i soyar", () => {
@@ -35,33 +50,60 @@ describe("llmConfigFromEnv", () => {
   });
 });
 
-describe("buildFillPrompt", () => {
+describe("buildFillUser", () => {
   const region = { member: "getById", nodeId: "n1", status: "skeleton", throws: ["NotFoundException"], deps: ["userRepository"], description: "Find a user" } as SurgicalMember;
   const ctx = { className: "UserService", signature: "async getById(id: string): Promise<User>", constructorText: "constructor(private readonly userRepository: Repo) {}", imports: "import { Repo } from './repo';" };
-  it("kontratı + imzayı içerir", () => {
-    const user = buildFillPrompt(region, ctx)[1]!;
-    expect(user.content).toContain("NotFoundException");
-    expect(user.content).toContain("userRepository");
-    expect(user.content).toContain("async getById");
+  it("kontratı + imzayı + API yüzeyini içerir", () => {
+    const user = buildFillUser(region, { ...ctx, apiSurface: "class UserRepository { constructor() }\n  methods: save(u: User): Promise<User>" });
+    expect(user).toContain("NotFoundException");
+    expect(user).toContain("userRepository");
+    expect(user).toContain("async getById");
+    expect(user).toContain("save(u: User)");
   });
-  it("önceki sorunları (kontrat/tsc) geri besler", () => {
-    const user = buildFillPrompt(region, ctx, ['throws undeclared "ConflictException"'])[1]!;
-    expect(user.content).toContain("had these problems");
-    expect(user.content).toContain("ConflictException");
+  it("önceki doğrulama turunu geri besler", () => {
+    const user = buildFillUser(region, ctx, ['throws undeclared "ConflictException"']);
+    expect(user).toContain("previous verification round");
+    expect(user).toContain("ConflictException");
   });
-
-  it("API yüzeyini prompt'a gömer (grounding)", () => {
-    const user = buildFillPrompt(region, { ...ctx, apiSurface: "class UserRepository { constructor() }\n  methods: save(u: User): Promise<User>" })[1]!;
-    expect(user.content).toContain("API surface");
-    expect(user.content).toContain("save(u: User)");
+  it("system prompt prose değil tool-kullanımı söyler", () => {
+    expect(FILL_SYSTEM).toContain("verify_fill");
+    expect(FILL_SYSTEM.toLowerCase()).toContain("never answer in prose");
   });
 });
 
-describe("fillRegion (mock LLM)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "fill-"));
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
-  mkdirSync(join(dir, "src"), { recursive: true });
+describe("runToolAgent (scripted transport)", () => {
+  const tool = { name: "verify", description: "v", parameters: { type: "object", properties: { code: { type: "string" } }, required: ["code"] } };
 
+  it("violations'ta döner, done'da durup result verir", async () => {
+    let calls = 0;
+    const resolve: ToolResolver = async (call) => {
+      calls += 1;
+      const code = String(call.args?.code ?? "");
+      if (code === "good") return { content: '{"ok":true}', done: true, result: code };
+      return { content: '{"ok":false,"violations":["bad"]}' };
+    };
+    const r = await runToolAgent({
+      transport: scriptedTransport(["bad", "still-bad", "good"], "verify"),
+      system: "s", user: "u", tools: [tool], resolve, forceFirstTool: "verify", maxRounds: 5,
+    });
+    expect(r.result).toBe("good");
+    expect(calls).toBe(3); // bad, still-bad, good
+    expect(r.rounds).toBe(3);
+  });
+
+  it("hiç yeşilleşmezse tur-tavanında exhausted döner", async () => {
+    const resolve: ToolResolver = async () => ({ content: '{"ok":false,"violations":["nope"]}' });
+    const r = await runToolAgent({
+      transport: scriptedTransport(["bad"], "verify"),
+      system: "s", user: "u", tools: [tool], resolve, maxRounds: 3,
+    });
+    expect(r.result).toBeUndefined();
+    expect(r.exhausted).toBe(true);
+    expect(r.rounds).toBe(3);
+  });
+});
+
+describe("fillRegion (scripted transport)", () => {
   const FILE = `import { Injectable } from "@nestjs/common";
 class NotFoundException extends Error {}
 class ConflictException extends Error {}
@@ -80,12 +122,15 @@ export class UserService {
 }
 `;
 
-  it("kontrata uyan gövdeyi yazar ve kaydeder", async () => {
+  it("validator'ları geçen gövdeyi yazar ve kaydeder", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fill-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "src", "user.service.ts"), FILE);
     const target = selectSkeletons(dir)[0]!;
     const r = await fillRegion(target, {
       rootDir: dir,
-      complete: async () => "const u = await this.userRepository.findById(id);\nif (!u) throw new NotFoundException();\nreturn u;",
+      llm: DUMMY_LLM,
+      transport: scriptedTransport(["const u = await this.userRepository.findById(id);\nif (!u) throw new NotFoundException();\nreturn u;"], "verify_fill"),
       skipVerify: true,
     });
     expect(r.status).toBe("filled");
@@ -93,14 +138,18 @@ export class UserService {
     expect(out).not.toContain("NOT_IMPLEMENTED");
     expect(out).toContain("@solarch:filled by=ai");
     expect(out).toContain("findById(id)");
+    rmSync(dir, { recursive: true, force: true });
   });
 
-  it("sözleşme ihlali → kaydetmez (stub korunur)", async () => {
+  it("validator ihlali → kaydetmez (stub korunur)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fill-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "src", "user.service.ts"), FILE);
     const target = selectSkeletons(dir)[0]!;
     const r = await fillRegion(target, {
       rootDir: dir,
-      complete: async () => "throw new ConflictException();", // bildirilmemiş
+      llm: DUMMY_LLM,
+      transport: scriptedTransport(["throw new ConflictException();"], "verify_fill"), // beyan dışı + NotFound gerçeklenmiyor
       maxAttempts: 2,
       skipVerify: true,
     });
@@ -108,26 +157,22 @@ export class UserService {
     expect(r.attempts).toBe(2);
     const out = readFileSync(join(dir, "src", "user.service.ts"), "utf8");
     expect(out).toContain("NOT_IMPLEMENTED"); // stub korundu
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 
-describe("buildSpecPrompt + generateSpecForService (Layer 4, mock LLM)", () => {
-  it("prompt servis içeriğini + yüzeyi + import yolunu + jest kurallarını içerir", () => {
-    const msgs = buildSpecPrompt("export class OrderService {}", "class OrderRepository { constructor() }\n  methods: save(o: Order): Promise<Order>", "./order.service");
-    expect(msgs[0]!.content).toContain("jest");
-    expect(msgs[0]!.content.toLowerCase()).toContain("mock");
-    expect(msgs[1]!.content).toContain("export class OrderService");
-    expect(msgs[1]!.content).toContain("save(o: Order)");
-    expect(msgs[1]!.content).toContain("./order.service");
-  });
-
-  it("mock LLM çıktısını <servis>.spec.ts olarak yazar", async () => {
+describe("generateSpecForService (scripted transport, jest yok)", () => {
+  it("mock spec'i <servis>.spec.ts olarak yazar, jest geçmezse passed:false raporlar", async () => {
     const d = mkdtempSync(join(tmpdir(), "spec-"));
     mkdirSync(join(d, "src"), { recursive: true });
     writeFileSync(join(d, "src", "order.service.ts"), `import { Injectable } from "@nestjs/common";\n@Injectable()\nexport class OrderService { async list(): Promise<number[]> { return []; } }\n`);
-    const r = await generateSpecForService(d, "src/order.service.ts", async () => "```ts\ndescribe('OrderService', () => { it('works', () => expect(true).toBe(true)); });\n```", { skipRun: true });
+    const r = await generateSpecForService(d, "src/order.service.ts", DUMMY_LLM, {
+      maxAttempts: 1,
+      transport: scriptedTransport(["```ts\ndescribe('OrderService', () => { it('works', () => expect(true).toBe(true)); });\n```"], "run_tests"),
+    });
     expect(r.status).toBe("written");
     expect(r.file).toBe("src/order.service.spec.ts");
+    expect(r.passed).toBe(false); // tmp dir'de jest yok → koşamaz
     const spec = readFileSync(join(d, "src", "order.service.spec.ts"), "utf8");
     expect(spec).toContain("describe('OrderService'");
     expect(spec).not.toContain("```"); // çitler soyuldu

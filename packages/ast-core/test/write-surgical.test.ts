@@ -65,6 +65,52 @@ return user;`;
     expect(res.ok).toBe(false);
     expect(res.error).toContain("nope");
   });
+
+  it("bildirilen throws gövdede gerçeklenmezse → ihlal (throws-realization)", () => {
+    const cls = classOf(SKELETON); // throws: NotFoundException deklare
+    // Gövde NotFoundException'ı hiç fırlatmıyor → eksik gerçekleme.
+    const res = writeSurgicalBody(cls, "getById", `return await this.userRepository.findById(id);`, "2026-06-16T00:00:00Z");
+    expect(res.ok).toBe(true);
+    expect(res.violations?.some((v) => /never reached/.test(v) && v.includes("NotFoundException"))).toBe(true);
+  });
+
+  it("çağrı-İPUCU deps'i (this.http.post) → taban erişimini (this.http) bildirilmiş sayar", () => {
+    // ExternalService emitter deps'i metot-yolu olarak yazar; gövde this.http.post(...) çağırır.
+    const src = `import { Injectable } from "@nestjs/common";
+class HttpService { post(u: string, b: unknown): Promise<unknown> { return Promise.resolve(b); } }
+@Injectable()
+export class EmailService {
+  private readonly baseUrl = "http://x";
+  constructor(private readonly http: HttpService) {}
+  async sendEmail(to: string): Promise<void> {
+    // @solarch:surgical id=bbbb-2222#sendEmail
+    // POST /send.
+    // deps: this.http.post, this.baseUrl
+    throw new Error("NOT_IMPLEMENTED: EmailService.sendEmail");
+  }
+}`;
+    const project = new Project({ useInMemoryFileSystem: true });
+    const cls = project.createSourceFile("email.client.ts", src).getClassOrThrow("EmailService");
+    const res = writeSurgicalBody(cls, "sendEmail", `await this.http.post(this.baseUrl + "/send", { to });`, "2026-06-16T00:00:00Z");
+    expect(res.ok).toBe(true);
+    expect(res.violations ?? []).toEqual([]); // this.http erişimi reddedilmemeli
+  });
+
+  it("LLM gövdeye prose sızdırırsa → ihlal döner ve gövdeyi YAZMAZ (iskelet korunur)", () => {
+    const cls = classOf(SKELETON);
+    // Gerçek regresyon: model gövdenin başına akıl-yürütme metni koydu.
+    const leaked = `variable naming, etc. Use plain types. No method signature. So I'll output:
+
+const user = await this.userRepository.findById(id);
+return user;`;
+    const res = writeSurgicalBody(cls, "getById", leaked, "2026-06-16T00:00:00Z");
+    expect(res.ok).toBe(true);
+    expect(res.violations?.some((v) => /not valid TypeScript|prose/i.test(v))).toBe(true);
+    // Bozuk gövde YAZILMADI → iskelet throw'u yerinde, prose dosyaya sızmadı.
+    const text = cls.getMethodOrThrow("getById").getText();
+    expect(text).toContain("NOT_IMPLEMENTED");
+    expect(text).not.toContain("So I'll output");
+  });
 });
 
 describe("readDeclaredSurface (grounding)", () => {

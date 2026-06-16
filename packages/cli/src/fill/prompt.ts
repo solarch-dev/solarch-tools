@@ -1,9 +1,12 @@
-/** Surgical fill prompt — turns a marked region's contract + class context into a
- *  chat prompt that asks for ONLY the method body statements (no signature, no
- *  marker, no fences). The orchestrator wraps the result back into the region. */
+/** Surgical fill prompt — agent context, NOT a rulebook.
+ *
+ *  Correctness is NOT enforced here. The model writes a body and calls the
+ *  `verify_fill` tool; deterministic validators (syntax, contract, declared-throws
+ *  realization) and real `tsc` decide pass/fail and feed precise violations back.
+ *  So this prompt only carries the TASK and its GROUND-TRUTH context (the real API
+ *  surface) — no "always do X" correctness prose that the model may ignore. */
 
 import type { SurgicalMember } from "@solarch/ast-core";
-import type { ChatMessage } from "./llm.js";
 
 export interface FillContext {
   className: string;
@@ -13,65 +16,45 @@ export interface FillContext {
   constructorText: string;
   /** Dosyanın import satırları (entity/DTO/exception tiplerine bağlam). */
   imports: string;
-  /** Çağrılabilir API yüzeyi — import edilen tiplerin gerçek metod/arity/enum-değer
-   *  imzaları. Halüsinasyonu (olmayan metodu çağırmayı) engeller. */
+  /** Çağrılabilir API yüzeyi — import edilen tiplerin gerçek metod/arity/enum-üye
+   *  imzaları. Halüsinasyonu tsc yakalar; bu yalnız zemin gerçeğini verir. */
   apiSurface?: string;
 }
 
-const SYSTEM = [
-  "You are a senior NestJS + TypeScript engineer implementing ONE method body inside an existing service.",
-  "Return ONLY the statements that go inside the method body — no method signature, no surrounding braces,",
-  "no comments about the marker, and NO markdown code fences. Just raw TypeScript statements.",
-  "GROUNDING — this is strict and overrides any convention you assume:",
-  "  - Call ONLY methods/properties that appear in the 'API surface' block below. Do NOT invent methods.",
-  "    If a dependency has no method for what you need, do the work inline with the methods that DO exist",
-  "    (e.g. if a repository exposes save() but not create(), construct the entity and call save()).",
-  "  - Exception classes: use the EXACT constructor arity shown in the API surface. Most take ZERO args —",
-  "    then write `throw new XException()` and never pass a message. Put any dynamic context in a comment, not the ctor.",
-  "  - For enum/state logic, compare against the enum VALUES shown in the API surface (e.g. \"open\"), never the",
-  "    member names, and never invent members that are not listed.",
-  "  - Under strict TypeScript a `catch (error)` binds `error: unknown` — narrow it before use:",
-  "    `error instanceof Error ? error.message : String(error)`. Never access `error.message` directly.",
-  "Honor the contract exactly:",
-  "  - You MAY throw ONLY the exceptions listed under 'throws'. Throwing any other *Exception is forbidden.",
-  "  - You MAY use ONLY the injected dependencies listed under 'deps', accessed via `this.<name>`.",
-  "    Using any other injected dependency is forbidden. The class's own private fields/helpers are allowed.",
-  "  - Match the given signature (parameters and return type). Use async/await where the return type is a Promise.",
-  "Write idiomatic, production-quality code that implements the described behavior. The code MUST compile under tsc strict.",
+export const FILL_SYSTEM = [
+  "You implement ONE method body inside an existing NestJS + TypeScript service.",
+  "You have a tool `verify_fill`: call it with the raw statements that go INSIDE the method body",
+  "(no method signature, no surrounding braces, no markdown fences — just TypeScript statements).",
+  "verify_fill validates your code and returns either ok, or a list of violations. The ONLY way to finish",
+  "is a verify_fill call that returns ok — never answer in prose. Read each violation, fix it, call again.",
+  "The 'API surface' block in the task is the ground truth of what actually exists (dependency methods and",
+  "their arity, enum members, exception constructors, DTO fields). Anything you reference must come from it;",
+  "the type-checker will reject invented methods, wrong arity, or bad enum members and you will see those errors.",
+  "Use async/await for Promise return types.",
 ].join("\n");
 
-export function buildFillPrompt(
-  region: SurgicalMember,
-  ctx: FillContext,
-  priorViolations?: string[],
-): ChatMessage[] {
+/** Tek bölgenin görev mesajı (ajan user turn'ü). */
+export function buildFillUser(region: SurgicalMember, ctx: FillContext, feedback?: string[]): string {
   const lines = [
     `Class: ${ctx.className}`,
     `Method to implement: ${ctx.signature}`,
     "",
-    "API surface — the ONLY methods/properties/enum values/exception constructors you may call:",
-    ctx.apiSurface || "(none resolved — be conservative, call nothing you cannot see)",
+    "API surface — the methods / enum members / exception constructors / DTO fields that exist:",
+    ctx.apiSurface || "(none resolved — call nothing you cannot see here)",
     "",
     "Imports in scope:",
     ctx.imports || "(none)",
     "",
-    "Constructor (available injected dependencies):",
+    "Constructor (injected dependencies, used via this.<name>):",
     ctx.constructorText || "(no constructor)",
     "",
     `Behavior: ${region.description ?? "(no description — infer from the signature and method name)"}`,
-    `throws (allowed exceptions): ${region.throws?.join(", ") || "(none — do not throw *Exception types)"}`,
-    `deps (allowed this.* dependencies): ${region.deps?.join(", ") || "(none)"}`,
+    `Declared exceptions (throws): ${region.throws?.join(", ") || "(none)"}`,
+    `Declared dependencies (deps): ${region.deps?.join(", ") || "(none)"}`,
   ];
-  if (priorViolations && priorViolations.length > 0) {
-    lines.push(
-      "",
-      "Your previous attempt had these problems — fix them and try again:",
-      ...priorViolations.map((v) => `  - ${v}`),
-    );
+  if (feedback && feedback.length > 0) {
+    lines.push("", "Notes from a previous verification round — address these:", ...feedback.map((v) => `  - ${v}`));
   }
-  lines.push("", "Return ONLY the method body statements.");
-  return [
-    { role: "system", content: SYSTEM },
-    { role: "user", content: lines.join("\n") },
-  ];
+  lines.push("", "Implement the method now by calling verify_fill.");
+  return lines.join("\n");
 }

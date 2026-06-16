@@ -6,7 +6,7 @@
  *  Only contract-passing fills are saved; failures keep their stub. */
 
 import pc from "picocolors";
-import { createCompleter, llmConfigFromEnv } from "../fill/llm.js";
+import { llmConfigFromEnv } from "../fill/llm.js";
 import { fillProject, type FillRegionResult } from "../fill/orchestrator.js";
 
 export interface FillCommandOptions {
@@ -49,7 +49,7 @@ export async function fillCommand(opts: FillCommandOptions): Promise<void> {
 
   const report = await fillProject({
     rootDir: opts.rootDir,
-    complete: createCompleter(config),
+    llm: config,
     region: opts.region,
     maxAttempts: opts.attempts,
     skipVerify: opts.skipVerify,

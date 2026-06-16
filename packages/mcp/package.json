@@ -1,6 +1,6 @@
 {
   "name": "@solarch/mcp",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Solarch MCP server — architecture context, rule checks and safe mutations for AI agents",
   "type": "module",
   "bin": {

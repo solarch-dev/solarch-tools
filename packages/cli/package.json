@@ -1,6 +1,6 @@
 {
   "name": "@solarch/cli",
-  "version": "0.7.8",
+  "version": "0.8.0",
   "description": "Solarch CLI — architecture drift check, live binding and cloud sync for NestJS codebases",
   "type": "module",
   "license": "SEE LICENSE IN ../../LICENSE",

@@ -3,9 +3,10 @@
  *  synchronously. Heavy but high-signal — the "realistic graph" lesson is that a
  *  contract check alone misses tsc/DI errors that only surface at build time. */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fixMissingImportsInFiles } from "@solarch/ast-core";
 
 export interface VerifyResult {
   ok: boolean;
@@ -62,4 +63,16 @@ export function runJestFile(rootDir: string, specRelFile: string): VerifyResult 
     ? run(localJest, [specRelFile, "--silent"], rootDir)
     : run("npx", ["--no-install", "jest", specRelFile, "--silent"], rootDir);
   return { ok: code === 0, output: output || (code === 0 ? "spec passed" : "spec failed") };
+}
+
+/** Spec'i diske yaz → import'ları düzelt (relative + jest-global'leri node:test'ten
+ *  söker) → o spec'i jest ile koş. run_tests tool'unun tek-adım doğrulayıcısı. */
+export function writeSpecAndRun(rootDir: string, specRelFile: string, content: string): VerifyResult {
+  writeFileSync(join(rootDir, specRelFile), content);
+  try {
+    fixMissingImportsInFiles(rootDir, [specRelFile]);
+  } catch {
+    /* en iyi çaba — dil servisi çözemezse spec yine koşulur */
+  }
+  return runJestFile(rootDir, specRelFile);
 }
