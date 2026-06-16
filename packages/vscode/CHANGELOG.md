@@ -3,6 +3,23 @@
 All notable changes to the Solarch VS Code extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.2] — 2026-06-16
+
+### Fixed
+Drift-to-zero pass — the deterministically-generated skeleton is now recognised
+as conformant, so freshly generated code no longer drifts from its own architecture:
+- **Exception contracts** — a service stub that declares `// throws: NotFoundException`
+  in its surgical marker now satisfies the architecture's `THROWS` edge, even while the
+  body is still an unimplemented placeholder. The stub keeps its `NOT_IMPLEMENTED`
+  marker, so implementation-progress tracking is untouched.
+- **Scaffolding** — generated NestJS `@Module` wiring and scaffold-marked guards are no
+  longer reported as "in code but not in architecture"; they are codegen glue the
+  architecture deliberately never models. The middleware routing they declare still
+  matches.
+- **Enum fields** — a DTO/Table field carrying an `EnumRef` in the architecture now
+  satisfies the code's `USES → Enum` edge, instead of warning that the edge is absent
+  from the diagram.
+
 ## [0.8.1] — 2026-06-16
 
 ### Fixed

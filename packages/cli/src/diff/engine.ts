@@ -240,6 +240,16 @@ export function diffGraphs(
   const asIsEdgeSet = new Map<string, AsIsEdge>();
   for (const e of asIs.edges) asIsEdgeSet.set(`${e.sourceKey}|${e.kind}|${e.targetKey}`, e);
 
+  const asIsByKey = new Map<string, AsIsNode>();
+  for (const n of asIs.nodes) asIsByKey.set(n.key, n);
+
+  // Bir cloud THROWS edge'i (Service -> Exception), koddaki iskelet stub'ın surgical
+  // `// throws: X` kontratıyla karşılanır. Stub gövdesi hâlâ NOT_IMPLEMENTED Error atar
+  // (iskelet/dolu ayrımı korunur) ama "X fırlatacak" taahhüdü beyan edildiği için
+  // mimari taahhüt sahte kod üretmeden doğrulanır.
+  const throwsDeclaredInSkeleton = (srcKey: string, tgtKey: string): boolean =>
+    !!asIsByKey.get(srcKey)?.surgical?.some((m) => (m.throws ?? []).some((t) => nodeKey("Exception", t) === tgtKey));
+
   const cloudEdgeSet = new Set<string>();
   const describeCloudNode = (id: string): string => {
     const n = cloudById.get(id);
@@ -253,6 +263,25 @@ export function diffGraphs(
     if (srcKey && tgtKey) cloudEdgeSet.add(`${srcKey}|${edge.kind}|${tgtKey}`);
   }
 
+  // Alan-düzeyi referans = edge taahhüdü. Cloud bir DTO/Table alanında EnumRef taşıyorsa
+  // (örn. @IsEnum), kod bunu USES->Enum edge'iyle gerçekleştirir; cloud'da edge çizilmemiş
+  // olsa da alan taahhüdü karşılar (EDGE_KIND_SUBSUMES ile aynı mantık, alan düzeyinde).
+  for (const cloud of toBe.nodes) {
+    const srcKey = cloudIdToCodeKey.get(cloud.id);
+    if (!srcKey) continue;
+    const listField = cloud.type === "DTO" ? "Fields" : cloud.type === "Table" ? "Columns" : null;
+    if (!listField) continue;
+    const items = (cloud.properties as Record<string, unknown>)[listField];
+    if (!Array.isArray(items)) continue;
+    for (const it of items) {
+      const ref = it && typeof it === "object" ? (it as Record<string, unknown>).EnumRef : undefined;
+      if (typeof ref !== "string" || !ref) continue;
+      const enumCloud = cloudByKey.get(nodeKey("Enum", ref));
+      const tgtKey = enumCloud && cloudIdToCodeKey.get(enumCloud.id);
+      if (tgtKey) cloudEdgeSet.add(`${srcKey}|USES|${tgtKey}`);
+    }
+  }
+
   for (const edge of toBe.edges) {
     const srcKey = cloudIdToCodeKey.get(edge.sourceNodeId);
     const tgtKey = cloudIdToCodeKey.get(edge.targetNodeId);
@@ -260,7 +289,9 @@ export function diffGraphs(
     const satisfiedInCode =
       codeKindsSatisfying(edge.kind).some((k) => asIsEdgeSet.has(`${srcKey}|${k}|${tgtKey}`)) ||
       // Global middleware joker'i: forRoutes("*") o kaynaktan tüm controller'lara routes_to taahhüdünü karşılar.
-      (edge.kind === "ROUTES_TO" && asIsEdgeSet.has(`${srcKey}|ROUTES_TO|${WILDCARD_CONTROLLER_KEY}`));
+      (edge.kind === "ROUTES_TO" && asIsEdgeSet.has(`${srcKey}|ROUTES_TO|${WILDCARD_CONTROLLER_KEY}`)) ||
+      // İskelet stub'ın surgical `throws:` kontratı THROWS taahhüdünü karşılar.
+      (edge.kind === "THROWS" && throwsDeclaredInSkeleton(srcKey, tgtKey));
     if (!satisfiedInCode) {
       findings.push({
         severity: "error",

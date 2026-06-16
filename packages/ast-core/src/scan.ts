@@ -135,9 +135,8 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
   const nestedDtoOf = new Map<string, string[]>();
   const enumRefsOf = new Map<string, string[]>();
   const entityOfRepo = new Map<string, string | null>(); // repo className → entity className
-  const moduleImportsOf = new Map<string, string[]>();
-  const moduleExportsOf = new Map<string, string[]>();
   const middlewareRoutesOf = new Map<string, MiddlewareRoute[]>(); // module className → middleware yönlendirmeleri
+  const moduleFileOf = new Map<string, string>(); // module className → dosya (ROUTES_TO edge kanıtı; Module artık As-Is node değil)
   const tableRelationsOf = new Map<string, string[]>(); // entity className → related entity classNames
 
   for (const sf of sourceFiles) {
@@ -165,7 +164,7 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
       const name = cls.getName();
       if (!name) continue;
 
-      let properties: Record<string, unknown>;
+      let properties: Record<string, unknown> = {};
       switch (kind) {
         case "Table": {
           const r = extractTable(cls);
@@ -195,11 +194,9 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
           break;
         }
         case "Module": {
-          const r = extractModule(cls);
-          properties = r.properties;
-          moduleImportsOf.set(name, r.extras.importedModuleNames);
-          moduleExportsOf.set(name, r.extras.exportedNames);
-          if (r.extras.middlewareRoutes.length > 0) middlewareRoutesOf.set(name, r.extras.middlewareRoutes);
+          // Module artık As-Is node değil; yalnız configure() route haritası ROUTES_TO için lazım.
+          const routes = extractModule(cls).extras.middlewareRoutes;
+          if (routes.length > 0) middlewareRoutesOf.set(name, routes);
           break;
         }
         case "Repository": {
@@ -233,12 +230,23 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
 
       // Codegen işaretleri: varsa node'a iliştir (implementasyon durumu katmanı).
       const surgical = readSurgicalMembers(cls);
-      addNode(
-        surgical.length > 0
-          ? { key: nodeKey(kind, name), kind, name, file, properties, surgical }
-          : { key: nodeKey(kind, name), kind, name, file, properties },
-        cls,
-      );
+
+      // Codegen-sentezlenen iskelet mimari taahhüt değildir; To-Be graph bunları hiç
+      // modellemez, o yüzden As-Is node sayılmazlar:
+      //  - @Module: her feature için sentezlenen NestJS wiring (cloud'da Module yok).
+      //    Yine de configure() route haritası ROUTES_TO için korunur (aşağıda işlenir).
+      //  - scaffold# işaretli stub'lar (örn. AuthGuard): scaffold.emitter glue'su.
+      //    Kullanıcının elle yazdığı sınıfın böyle bir işareti olmaz → o yine taranır.
+      if (kind === "Module") {
+        moduleFileOf.set(name, file);
+      } else if (!surgical.some((s) => s.nodeId === "scaffold")) {
+        addNode(
+          surgical.length > 0
+            ? { key: nodeKey(kind, name), kind, name, file, properties, surgical }
+            : { key: nodeKey(kind, name), kind, name, file, properties },
+          cls,
+        );
+      }
     }
   }
 
@@ -323,38 +331,8 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
       if (en?.kind === "Enum") addEdge(node.key, "USES", en.key, node.file, `enum reference ${ref}`);
     }
 
-    // e) Module → Module (DEPENDS_ON) + Module → Service (USES, public API)
-    if (node.kind === "Module") {
-      for (const imp of moduleImportsOf.get(node.name) ?? []) {
-        const m = resolve(imp);
-        if (m?.kind === "Module") addEdge(node.key, "DEPENDS_ON", m.key, node.file, `@Module imports ${imp}`);
-      }
-      for (const exp of moduleExportsOf.get(node.name) ?? []) {
-        const s = resolve(exp);
-        if (s?.kind === "Service") addEdge(node.key, "USES", s.key, node.file, `@Module exports ${exp}`);
-      }
-      // configure(consumer).apply(M).forRoutes(C) → Middleware ROUTES_TO Controller.
-      // Kaynak edge MIDDLEWARE'dir, modül değil. forRoutes("*") global → tek joker
-      // edge (WILDCARD_CONTROLLER_KEY); diff bunu o middleware'in tüm ROUTES_TO
-      // taahhütlerini karşılayan joker sayar (controller başına gürültü yok).
-      for (const route of middlewareRoutesOf.get(node.name) ?? []) {
-        for (const mwName of route.middlewares) {
-          const mw = resolve(mwName);
-          if (mw?.kind !== "Middleware") continue;
-          if (route.wildcard) {
-            addEdge(mw.key, "ROUTES_TO", WILDCARD_CONTROLLER_KEY, node.file,
-              `${node.name}.configure: ${mwName} → * (all routes)`);
-            continue;
-          }
-          for (const cn of route.controllers) {
-            const ctrl = resolve(cn);
-            if (ctrl?.kind === "Controller") {
-              addEdge(mw.key, "ROUTES_TO", ctrl.key, node.file, `${node.name}.configure: ${mwName} → ${cn}`);
-            }
-          }
-        }
-      }
-    }
+    // (Module→Module DEPENDS_ON ve Module→Service USES edge'leri kaldırıldı: cloud'da
+    //  Module yok, karşılığı olmayan gürültüydü. Module artık As-Is node değil.)
 
     // f) throw new XException(...) → THROWS
     if (node.kind === "Controller" || node.kind === "Service" || node.kind === "Repository") {
@@ -370,6 +348,29 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
       if (ext) {
         const base = resolve(ext);
         if (base?.kind === "Exception") addEdge(node.key, "EXTENDS", base.key, node.file, `extends ${ext}`);
+      }
+    }
+  }
+
+  // Module configure() yönlendirmeleri — Module artık As-Is node olmadığından registry
+  // döngüsünden ayrı, route haritası üstünden işlenir. Middleware ROUTES_TO Controller
+  // (cloud bunları modeller). forRoutes("*") → tek joker (WILDCARD_CONTROLLER_KEY).
+  for (const [moduleName, routes] of middlewareRoutesOf) {
+    const file = moduleFileOf.get(moduleName) ?? "";
+    for (const route of routes) {
+      for (const mwName of route.middlewares) {
+        const mw = resolve(mwName);
+        if (mw?.kind !== "Middleware") continue;
+        if (route.wildcard) {
+          addEdge(mw.key, "ROUTES_TO", WILDCARD_CONTROLLER_KEY, file, `${moduleName}.configure: ${mwName} → * (all routes)`);
+          continue;
+        }
+        for (const cn of route.controllers) {
+          const ctrl = resolve(cn);
+          if (ctrl?.kind === "Controller") {
+            addEdge(mw.key, "ROUTES_TO", ctrl.key, file, `${moduleName}.configure: ${mwName} → ${cn}`);
+          }
+        }
       }
     }
   }

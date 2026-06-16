@@ -2,7 +2,7 @@
   "name": "solarch-vscode",
   "displayName": "Solarch",
   "description": "Architecture graph + drift status for Solarch-linked NestJS repos — see the live state of code vs architecture, like Git Graph but for your system design",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "publisher": "solarch",
   "private": true,
   "icon": "media/icon.png",

@@ -310,6 +310,51 @@ describe("diffGraphs", () => {
     expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_NOT_IN_CLOUD")).toEqual([]);
   });
 
+  it("iskelet stub'ın surgical `throws:` kontratı cloud THROWS taahhüdünü karşılar", () => {
+    const code = asIs();
+    // Stub gövdesi hâlâ NOT_IMPLEMENTED Error atar (iskelet) ama surgical kontrat
+    // "NotFoundException fırlatacak" diye beyan eder → mimari taahhüt karşılanır.
+    code.nodes[0]!.surgical = [
+      { member: "getById", nodeId: "n1", status: "skeleton", throws: ["NotFoundException"], line: 10 },
+    ];
+    code.nodes.push({
+      key: "Exception:notfoundexception",
+      kind: "Exception",
+      name: "NotFoundException",
+      file: "src/exceptions/not-found.exception.ts",
+      properties: { ExceptionName: "NotFoundException" },
+    });
+    const cloud = toBe();
+    cloud.nodes.push({ id: "n9", type: "Exception", projectId: "p1", version: 1, properties: { ExceptionName: "NotFoundException" } });
+    cloud.edges.push({ id: "e9", kind: "THROWS", sourceNodeId: "n1", targetNodeId: "n9", properties: {} });
+    const r = diffGraphs(code, cloud, null, {});
+    expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_MISSING_IN_CODE")).toEqual([]);
+  });
+
+  it("cloud DTO alanındaki EnumRef, koddaki DTO USES Enum edge'ini karşılar (NOT_IN_CLOUD yok)", () => {
+    const code = asIs();
+    code.nodes.push(
+      { key: "DTO:orderresponse", kind: "DTO", name: "OrderResponse", file: "src/dto/order-response.dto.ts", properties: { Name: "OrderResponse" } },
+      { key: "Enum:orderstatus", kind: "Enum", name: "OrderStatus", file: "src/enums/order-status.enum.ts", properties: { Name: "OrderStatus" } },
+    );
+    code.edges.push({
+      key: "DTO:orderresponse -[USES]-> Enum:orderstatus",
+      kind: "USES",
+      sourceKey: "DTO:orderresponse",
+      targetKey: "Enum:orderstatus",
+      file: "src/dto/order-response.dto.ts",
+      reason: "enum reference OrderStatus",
+    });
+    const cloud = toBe();
+    cloud.nodes.push(
+      // Cloud'da DTO->Enum EDGE'i YOK — yalnız alan-düzeyi EnumRef taşıyor.
+      { id: "n7", type: "DTO", projectId: "p1", version: 1, properties: { Name: "OrderResponse", Fields: [{ Name: "status", EnumRef: "OrderStatus" }] } },
+      { id: "n8", type: "Enum", projectId: "p1", version: 1, properties: { Name: "OrderStatus" } },
+    );
+    const r = diffGraphs(code, cloud, null, {});
+    expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_NOT_IN_CLOUD")).toEqual([]);
+  });
+
   it("rules null ise legalite kontrolü atlanır (offline)", () => {
     const code = asIs();
     code.edges.push({
