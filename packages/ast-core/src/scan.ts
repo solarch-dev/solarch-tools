@@ -29,6 +29,7 @@ import {
   extractTable,
   extractThrownExceptionNames,
   extractWorker,
+  type MiddlewareRoute,
 } from "./extract.js";
 import {
   type AsIsEdge,
@@ -36,6 +37,7 @@ import {
   type AsIsNode,
   type EdgeKind,
   type NodeKind,
+  WILDCARD_CONTROLLER_KEY,
   edgeKey,
   nodeKey,
 } from "./types.js";
@@ -135,6 +137,7 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
   const entityOfRepo = new Map<string, string | null>(); // repo className → entity className
   const moduleImportsOf = new Map<string, string[]>();
   const moduleExportsOf = new Map<string, string[]>();
+  const middlewareRoutesOf = new Map<string, MiddlewareRoute[]>(); // module className → middleware yönlendirmeleri
   const tableRelationsOf = new Map<string, string[]>(); // entity className → related entity classNames
 
   for (const sf of sourceFiles) {
@@ -196,6 +199,7 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
           properties = r.properties;
           moduleImportsOf.set(name, r.extras.importedModuleNames);
           moduleExportsOf.set(name, r.extras.exportedNames);
+          if (r.extras.middlewareRoutes.length > 0) middlewareRoutesOf.set(name, r.extras.middlewareRoutes);
           break;
         }
         case "Repository": {
@@ -328,6 +332,27 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
       for (const exp of moduleExportsOf.get(node.name) ?? []) {
         const s = resolve(exp);
         if (s?.kind === "Service") addEdge(node.key, "USES", s.key, node.file, `@Module exports ${exp}`);
+      }
+      // configure(consumer).apply(M).forRoutes(C) → Middleware ROUTES_TO Controller.
+      // Kaynak edge MIDDLEWARE'dir, modül değil. forRoutes("*") global → tek joker
+      // edge (WILDCARD_CONTROLLER_KEY); diff bunu o middleware'in tüm ROUTES_TO
+      // taahhütlerini karşılayan joker sayar (controller başına gürültü yok).
+      for (const route of middlewareRoutesOf.get(node.name) ?? []) {
+        for (const mwName of route.middlewares) {
+          const mw = resolve(mwName);
+          if (mw?.kind !== "Middleware") continue;
+          if (route.wildcard) {
+            addEdge(mw.key, "ROUTES_TO", WILDCARD_CONTROLLER_KEY, node.file,
+              `${node.name}.configure: ${mwName} → * (all routes)`);
+            continue;
+          }
+          for (const cn of route.controllers) {
+            const ctrl = resolve(cn);
+            if (ctrl?.kind === "Controller") {
+              addEdge(mw.key, "ROUTES_TO", ctrl.key, node.file, `${node.name}.configure: ${mwName} → ${cn}`);
+            }
+          }
+        }
       }
     }
 

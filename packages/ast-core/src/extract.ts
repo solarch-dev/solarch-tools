@@ -418,9 +418,60 @@ export function extractDto(cls: ClassDeclaration): {
 
 /* ── Module ─────────────────────────────────────────────────────── */
 
+/** Bir `configure()` içindeki tek `consumer.apply(M).forRoutes(...)` zinciri. */
+export interface MiddlewareRoute {
+  /** apply(...) argümanları — uygulanan middleware sınıf adları. */
+  middlewares: string[];
+  /** forRoutes(...) içindeki Controller sınıf adları (açık liste). */
+  controllers: string[];
+  /** forRoutes("*") veya yol string'i → tüm controller'lara uygulanır. */
+  wildcard: boolean;
+}
+
 export interface ModuleExtras {
   importedModuleNames: string[];
   exportedNames: string[];
+  middlewareRoutes: MiddlewareRoute[];
+}
+
+/** NestModule `configure(consumer)` gövdesindeki middleware yönlendirmelerini
+ *  çıkar: `consumer.apply(JwtMiddleware).forRoutes(AuthController, ...)`.
+ *  `.exclude(...)` araya girse de apply çağrısını zincirde bulur. */
+export function extractMiddlewareRoutes(cls: ClassDeclaration): MiddlewareRoute[] {
+  const configure = cls.getMethod("configure");
+  if (!configure) return [];
+  const routes: MiddlewareRoute[] = [];
+
+  for (const call of configure.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+    const expr = call.getExpression();
+    if (!TsNode.isPropertyAccessExpression(expr) || expr.getName() !== "forRoutes") continue;
+
+    // forRoutes'un nesnesi `consumer.apply(M)` (veya .exclude() zinciri) — apply çağrısını bul.
+    const obj = expr.getExpression();
+    const applyCandidates = TsNode.isCallExpression(obj)
+      ? [obj, ...obj.getDescendantsOfKind(SyntaxKind.CallExpression)]
+      : obj.getDescendantsOfKind(SyntaxKind.CallExpression);
+    const applyCall = applyCandidates.find((c) => {
+      const e = c.getExpression();
+      return TsNode.isPropertyAccessExpression(e) && e.getName() === "apply";
+    });
+    if (!applyCall) continue;
+
+    const middlewares = applyCall
+      .getArguments()
+      .map((a) => (TsNode.isIdentifier(a) ? a.getText() : ""))
+      .filter(Boolean);
+    if (middlewares.length === 0) continue;
+
+    const controllers: string[] = [];
+    let wildcard = false;
+    for (const arg of call.getArguments()) {
+      if (TsNode.isIdentifier(arg)) controllers.push(arg.getText());
+      else wildcard = true; // "*", yol string'i veya RouteInfo objesi → tüm controller'lar
+    }
+    routes.push({ middlewares, controllers, wildcard });
+  }
+  return routes;
 }
 
 /** @Module({ imports: [...], exports: [...] }) metadata'sındaki identifier listesi. */
@@ -460,7 +511,7 @@ export function extractModule(cls: ClassDeclaration): {
       ExposedServices: exportedNames.filter((n) => /Service$/.test(n)),
       Dependencies: importedModuleNames,
     },
-    extras: { importedModuleNames, exportedNames },
+    extras: { importedModuleNames, exportedNames, middlewareRoutes: extractMiddlewareRoutes(cls) },
   };
 }
 

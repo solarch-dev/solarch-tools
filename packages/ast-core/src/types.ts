@@ -58,6 +58,12 @@ export function nameOfNode(kind: NodeKind, properties: Record<string, unknown>):
   return typeof v === "string" ? v : "";
 }
 
+/** forRoutes("*") gibi global middleware'ler için sentinel hedef anahtarı —
+ *  "tüm controller'lar". Diff bunu, o middleware'den çıkan herhangi bir
+ *  ROUTES_TO taahhüdünü karşılayan joker olarak yorumlar (controller başına
+ *  ayrı edge üretip gürültü yapmaz). Gerçek bir node'a karşılık gelmez. */
+export const WILDCARD_CONTROLLER_KEY = "Controller:*";
+
 /** Kanonik isim — eşleştirme anahtarı: küçük harf + yalnız alfanumerik.
  *  "UsersService", "users-service" ve "users_service" aynı anahtara düşer. */
 export function canonicalName(name: string): string {

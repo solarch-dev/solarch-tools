@@ -14,6 +14,7 @@
 import {
   nameOfNode,
   nodeKey,
+  WILDCARD_CONTROLLER_KEY,
   type AsIsEdge,
   type AsIsGraph,
   type AsIsNode,
@@ -85,25 +86,43 @@ export function evaluateEdge(
 
 /* ── property karşılaştırma (info seviyesi) ──────────────────────── */
 
-function listNames(properties: Record<string, unknown>, listField: string, nameField: string): Set<string> {
+function listNames(
+  properties: Record<string, unknown>,
+  listField: string,
+  nameField: string,
+  normalize: (v: string) => string = (v) => v.toLowerCase(),
+): Set<string> {
   const list = properties[listField];
   if (!Array.isArray(list)) return new Set();
   return new Set(
     list
       .map((item) => (item && typeof item === "object" ? String((item as Record<string, unknown>)[nameField] ?? "") : ""))
       .filter(Boolean)
-      .map((n) => n.toLowerCase()),
+      .map(normalize),
   );
+}
+
+/** Endpoint yolunu kanonikleştir: OpenAPI `{param}` ile NestJS `:param` aynı
+ *  yola işaret eder; parametre adı geliştiricinin tercihi olduğundan yer
+ *  tutucuya indirgenir. `/orders/{id}` ve `/orders/:orderId` → `/orders/:p`. */
+function canonicalRoute(route: string): string {
+  return route
+    .replace(/\{[^}]+\}/g, ":p")
+    .replace(/:[A-Za-z0-9_]+/g, ":p")
+    .replace(/\/+$/, "")
+    .toLowerCase();
 }
 
 /** Kind → liste-alanı tanımı. Diff bu alanlarda info-seviyesi drift raporlar;
  *  push'ta bu alanlarda **kod kaynak kabul edilir** (cloud listesi kodunkiyle
  *  değiştirilir, diğer cloud property'leri korunur). */
-export const LIST_FIELD_SPEC: Partial<Record<NodeKind, { listField: string; nameField: string; label: string }>> = {
+export const LIST_FIELD_SPEC: Partial<
+  Record<NodeKind, { listField: string; nameField: string; label: string; normalize?: (v: string) => string }>
+> = {
   Table: { listField: "Columns", nameField: "Name", label: "column" },
   DTO: { listField: "Fields", nameField: "Name", label: "field" },
   Service: { listField: "Methods", nameField: "MethodName", label: "method" },
-  Controller: { listField: "Endpoints", nameField: "Route", label: "endpoint" },
+  Controller: { listField: "Endpoints", nameField: "Route", label: "endpoint", normalize: canonicalRoute },
   Enum: { listField: "Values", nameField: "Key", label: "value" },
 };
 
@@ -114,8 +133,8 @@ export function listFieldDrift(
 ): { listField: string; label: string; missing: string[]; extra: string[] } | null {
   const s = LIST_FIELD_SPEC[asIs.kind];
   if (!s) return null;
-  const inCode = listNames(asIs.properties, s.listField, s.nameField);
-  const inCloud = listNames(cloud.properties, s.listField, s.nameField);
+  const inCode = listNames(asIs.properties, s.listField, s.nameField, s.normalize);
+  const inCloud = listNames(cloud.properties, s.listField, s.nameField, s.normalize);
   const missing = [...inCloud].filter((n) => !inCode.has(n));
   const extra = [...inCode].filter((n) => !inCloud.has(n));
   if (missing.length === 0 && extra.length === 0) return null;
@@ -130,6 +149,28 @@ function propertyDrift(asIs: AsIsNode, cloud: CloudNode): string[] {
   if (drift.missing.length > 0) drifts.push(`${drift.label}(s) in cloud but not in code: ${drift.missing.join(", ")}`);
   if (drift.extra.length > 0) drifts.push(`${drift.label}(s) in code but not in cloud: ${drift.extra.join(", ")}`);
   return drifts;
+}
+
+/* ── edge-kind kapsama (subsumption) ─────────────────────────────── */
+
+/** Mimari daha genel bir fiil çizip kod onu daha özel bir fiille
+ *  gerçekleştirdiğinde drift sayılmaz. Controller bir response DTO'sunu
+ *  "kullanır" (USES) — kodda onu "döndürmek" (RETURNS) bu taahhüdü karşılar. */
+const EDGE_KIND_SUBSUMES: Partial<Record<EdgeKind, EdgeKind[]>> = {
+  USES: ["RETURNS"],
+};
+
+/** Bir bulut edge-kind'ını koddaki hangi kind'lar karşılar (kendisi + alt türleri). */
+function codeKindsSatisfying(cloudKind: EdgeKind): EdgeKind[] {
+  return [cloudKind, ...(EDGE_KIND_SUBSUMES[cloudKind] ?? [])];
+}
+
+/** Bir kod edge-kind'ını bulutta hangi kind'lar kapsar (kendisi + üst türleri). */
+function cloudKindsCovering(codeKind: EdgeKind): EdgeKind[] {
+  const supers = (Object.keys(EDGE_KIND_SUBSUMES) as EdgeKind[]).filter((k) =>
+    (EDGE_KIND_SUBSUMES[k] ?? []).includes(codeKind),
+  );
+  return [codeKind, ...supers];
 }
 
 /* ── ana diff ────────────────────────────────────────────────────── */
@@ -158,7 +199,11 @@ export function diffGraphs(
   for (const node of asIs.nodes) {
     const cachedId = previousCache[node.key];
     const cached = cachedId ? cloudById.get(cachedId) : undefined;
-    const found = cached && cached.type === node.kind ? cached : cloudByKey.get(node.key);
+    // Eşleştirme anahtarını node.key (sınıf adı) yerine kanonik isimden (nameOfNode)
+    // türet → Table'da sınıf adı (Reservation) ≠ TableName (reservations) olduğunda
+    // cloud anahtarıyla (TableName) hizalanır. nameOfNode boşsa sınıf adına düşer.
+    const matchKey = nodeKey(node.kind, nameOfNode(node.kind, node.properties) || node.name);
+    const found = cached && cached.type === node.kind ? cached : cloudByKey.get(matchKey);
     if (found && !matchedCloudIds.has(found.id)) {
       codeKeyToCloudId.set(node.key, found.id);
       matchedCloudIds.add(found.id);
@@ -212,7 +257,11 @@ export function diffGraphs(
     const srcKey = cloudIdToCodeKey.get(edge.sourceNodeId);
     const tgtKey = cloudIdToCodeKey.get(edge.targetNodeId);
     if (!srcKey || !tgtKey) continue; // ucu eksikse node bulgusu zaten verildi
-    if (!asIsEdgeSet.has(`${srcKey}|${edge.kind}|${tgtKey}`)) {
+    const satisfiedInCode =
+      codeKindsSatisfying(edge.kind).some((k) => asIsEdgeSet.has(`${srcKey}|${k}|${tgtKey}`)) ||
+      // Global middleware joker'i: forRoutes("*") o kaynaktan tüm controller'lara routes_to taahhüdünü karşılar.
+      (edge.kind === "ROUTES_TO" && asIsEdgeSet.has(`${srcKey}|ROUTES_TO|${WILDCARD_CONTROLLER_KEY}`));
+    if (!satisfiedInCode) {
       findings.push({
         severity: "error",
         code: "DRIFT_EDGE_MISSING_IN_CODE",
@@ -226,7 +275,9 @@ export function diffGraphs(
 
   for (const edge of asIs.edges) {
     const bothMatched = codeKeyToCloudId.has(edge.sourceKey) && codeKeyToCloudId.has(edge.targetKey);
-    const inCloud = cloudEdgeSet.has(`${edge.sourceKey}|${edge.kind}|${edge.targetKey}`);
+    const inCloud = cloudKindsCovering(edge.kind).some((k) =>
+      cloudEdgeSet.has(`${edge.sourceKey}|${k}|${edge.targetKey}`),
+    );
 
     // Legalite — cloud'da olsun olmasın koddaki her edge kurala uymalı.
     if (rules) {

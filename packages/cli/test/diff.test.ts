@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AsIsGraph } from "@solarch/ast-core";
+import { WILDCARD_CONTROLLER_KEY, type AsIsGraph } from "@solarch/ast-core";
 import { diffGraphs } from "../src/diff/engine.js";
 import type { CloudGraph, RuleCatalog } from "../src/api.js";
 
@@ -180,6 +180,134 @@ describe("diffGraphs", () => {
     const r = diffGraphs(asIs(), cloud, RULES, { "Service:usersservice": "n1" });
     expect(r.findings.filter((f) => f.code === "DRIFT_NODE_MISSING_IN_CODE")).toEqual([]);
     expect(r.matched).toBe(2);
+  });
+
+  it("Table'ı sınıf adı (Reservation) ≠ TableName (reservations) olsa da TableName ile eşler", () => {
+    // @Entity("reservations") class Reservation → node.key sınıf adından ("Table:reservation"),
+    // ama TableName "reservations". Cloud Table "Reservations". Cache yok → kanonik isimle
+    // eşleşmeli (regresyon: node.key ile eşleşmeye çalışırsa false DRIFT_NODE_MISSING_IN_CODE).
+    const code: AsIsGraph = {
+      scannedAt: "t", rootDir: "/repo", tsconfigPath: null, fileCount: 1,
+      nodes: [{
+        key: "Table:reservation", kind: "Table", name: "Reservation",
+        file: "src/reservation/reservation.entity.ts",
+        properties: { TableName: "reservations", Description: "Reservations", Columns: [{ Name: "id" }] },
+      }],
+      edges: [], warnings: [],
+    };
+    const cloud: CloudGraph = {
+      project: { id: "p1", name: "Demo" },
+      nodes: [{ id: "n1", type: "Table", projectId: "p1", version: 1, properties: { TableName: "Reservations" } }],
+      edges: [], counts: { nodes: 1, edges: 0 }, graphRevision: 0,
+    };
+    const r = diffGraphs(code, cloud, null, {}); // boş cache → isimle eşleşmeli
+    expect(r.findings.filter((f) => f.code === "DRIFT_NODE_MISSING_IN_CODE")).toEqual([]);
+    expect(r.matched).toBe(1);
+  });
+
+  it("endpoint path-param yazımı: bulut {id} ile kod :id aynı endpoint (false DRIFT_PROPERTY yok)", () => {
+    const code = asIs();
+    code.nodes.push({
+      key: "Controller:orderscontroller",
+      kind: "Controller",
+      name: "OrdersController",
+      file: "src/orders/orders.controller.ts",
+      properties: { ControllerName: "OrdersController", Endpoints: [{ Route: "/:id" }, { Route: "/user/:userId" }] },
+    });
+    const cloud = toBe();
+    cloud.nodes.push({
+      id: "n3",
+      type: "Controller",
+      projectId: "p1",
+      version: 1,
+      properties: { ControllerName: "OrdersController", Endpoints: [{ Route: "/{id}" }, { Route: "/user/{userid}" }] },
+    });
+    const r = diffGraphs(code, cloud, null, {});
+    expect(r.findings.filter((f) => f.code === "DRIFT_PROPERTY")).toEqual([]);
+  });
+
+  it("Controller USES DTO (bulut) ↔ RETURNS DTO (kod) drift değil — RETURNS, USES'i karşılar", () => {
+    const code = asIs();
+    code.nodes.push(
+      {
+        key: "Controller:orderscontroller",
+        kind: "Controller",
+        name: "OrdersController",
+        file: "src/orders/orders.controller.ts",
+        properties: { ControllerName: "OrdersController" },
+      },
+      {
+        key: "DTO:orderresponse",
+        kind: "DTO",
+        name: "OrderResponse",
+        file: "src/orders/dto/order-response.dto.ts",
+        properties: { Name: "OrderResponse" },
+      },
+    );
+    code.edges.push({
+      key: "Controller:orderscontroller -[RETURNS]-> DTO:orderresponse",
+      kind: "RETURNS",
+      sourceKey: "Controller:orderscontroller",
+      targetKey: "DTO:orderresponse",
+      file: "src/orders/orders.controller.ts",
+      reason: "return type OrderResponse",
+    });
+    const cloud = toBe();
+    cloud.nodes.push(
+      { id: "n3", type: "Controller", projectId: "p1", version: 1, properties: { ControllerName: "OrdersController" } },
+      { id: "n4", type: "DTO", projectId: "p1", version: 1, properties: { Name: "OrderResponse" } },
+    );
+    cloud.edges.push({ id: "e2", kind: "USES", sourceNodeId: "n3", targetNodeId: "n4", properties: {} });
+    const r = diffGraphs(code, cloud, null, {});
+    expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_MISSING_IN_CODE")).toEqual([]);
+    expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_NOT_IN_CLOUD")).toEqual([]);
+  });
+
+  it("global middleware joker'i (forRoutes('*')) bulutta çizilen ROUTES_TO'ları karşılar, gürültü yapmaz", () => {
+    const code: AsIsGraph = {
+      scannedAt: "t",
+      rootDir: "/repo",
+      tsconfigPath: null,
+      fileCount: 1,
+      nodes: [
+        {
+          key: "Middleware:ratelimitmiddleware",
+          kind: "Middleware",
+          name: "RateLimitMiddleware",
+          file: "src/common/common.module.ts",
+          properties: { MiddlewareName: "RateLimitMiddleware" },
+        },
+        { key: "Controller:authcontroller", kind: "Controller", name: "AuthController", file: "src/auth/auth.controller.ts", properties: { ControllerName: "AuthController" } },
+        { key: "Controller:menucontroller", kind: "Controller", name: "MenuController", file: "src/menu/menu.controller.ts", properties: { ControllerName: "MenuController" } },
+      ],
+      // forRoutes("*") → tek joker edge (controller başına değil).
+      edges: [
+        {
+          key: `Middleware:ratelimitmiddleware -[ROUTES_TO]-> ${WILDCARD_CONTROLLER_KEY}`,
+          kind: "ROUTES_TO",
+          sourceKey: "Middleware:ratelimitmiddleware",
+          targetKey: WILDCARD_CONTROLLER_KEY,
+          file: "src/common/common.module.ts",
+          reason: "CommonModule.configure: RateLimitMiddleware → * (all routes)",
+        },
+      ],
+      warnings: [],
+    };
+    const cloud: CloudGraph = {
+      project: { id: "p1", name: "Demo" },
+      nodes: [
+        { id: "n1", type: "Middleware", projectId: "p1", version: 1, properties: { MiddlewareName: "RateLimitMiddleware" } },
+        { id: "n2", type: "Controller", projectId: "p1", version: 1, properties: { ControllerName: "AuthController" } },
+        { id: "n3", type: "Controller", projectId: "p1", version: 1, properties: { ControllerName: "MenuController" } },
+      ],
+      // Bulut sadece AuthController'a çizmiş — joker ikisini de karşılamalı.
+      edges: [{ id: "e1", kind: "ROUTES_TO", sourceNodeId: "n1", targetNodeId: "n2", properties: {} }],
+      counts: { nodes: 3, edges: 1 },
+      graphRevision: 0,
+    };
+    const r = diffGraphs(code, cloud, null, {});
+    expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_MISSING_IN_CODE")).toEqual([]);
+    expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_NOT_IN_CLOUD")).toEqual([]);
   });
 
   it("rules null ise legalite kontrolü atlanır (offline)", () => {

@@ -3,6 +3,25 @@
 All notable changes to the Solarch VS Code extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.1] — 2026-06-16
+
+### Fixed
+Drift accuracy pass — several false positives no longer fire when the code
+actually matches the architecture:
+- **Table name** — drift no longer reports every Table as "missing in code" when
+  the Entity class name differs from the table name (e.g. `class Reservation` /
+  `@Entity("reservations")`). As-Is nodes now match the architecture by canonical
+  name, not the class-name key.
+- **Endpoint paths** — `/{id}` (OpenAPI) and `/:id` (NestJS) are now treated as
+  the same route, so controller endpoints no longer drift on param syntax alone.
+- **Controller → DTO verb** — an architecture `USES` edge to a response DTO is
+  satisfied by the code's `RETURNS` edge (returning a DTO is a way of using it),
+  instead of double-reporting the same relationship in both directions.
+- **Middleware routing** — `configure(consumer).apply(Mw).forRoutes(Controller)`
+  is now scanned, so `Middleware ROUTES_TO Controller` edges are no longer flagged
+  as unimplemented. A global `forRoutes("*")` is matched as a wildcard that covers
+  every controller without per-controller noise.
+
 ## [0.8.0] — 2026-06-15
 
 ### Added

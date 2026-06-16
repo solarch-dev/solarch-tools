@@ -40,6 +40,7 @@ describe("scanProject (basic-app fixture)", () => {
         "Controller:userscontroller -[USES]-> DTO:createuserdto",
         "DTO:createuserdto -[USES]-> Enum:userrole",
         "DTO:userresponsedto -[HAS]-> DTO:addressdto",
+        "Middleware:authguard -[ROUTES_TO]-> Controller:userscontroller",
         "Module:mailmodule -[USES]-> Service:mailservice",
         "Module:usersmodule -[DEPENDS_ON]-> Module:mailmodule",
         "Module:usersmodule -[USES]-> Service:usersservice",
