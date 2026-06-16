@@ -12,6 +12,7 @@ import { fixMissingImportsInFiles, readDeclaredSurface, readFillContext, tryFill
 import { runScan } from "../commands/scan.js";
 import { buildFillPrompt } from "./prompt.js";
 import { stripCodeFences, type CompleteFn } from "./llm.js";
+import { generateSpecForService, type SpecResult } from "./spec.js";
 import { runTests, runTypecheck, type VerifyResult } from "./verify.js";
 
 export interface RegionTarget {
@@ -36,6 +37,8 @@ export interface FillReport {
   filled: number;
   violations: number;
   errors: number;
+  /** Layer 4 — üretilen davranış spec'leri (--with-tests). */
+  specs?: SpecResult[];
   typecheck?: VerifyResult;
   tests?: VerifyResult;
 }
@@ -48,6 +51,8 @@ export interface FillOptions {
   maxAttempts?: number;
   /** tsc + test geçitlerini atla (yalnız kontrat). */
   skipVerify?: boolean;
+  /** Layer 4 — dolu servisler için gerçek davranış spec'i üret (stub'ı ezer). */
+  withTests?: boolean;
   /** Bölge tamamlandığında çağrılır (ilerleme). */
   onProgress?: (r: FillRegionResult) => void;
 }
@@ -160,6 +165,29 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
     violations: regions.filter((r) => r.status === "violation").length,
     errors: regions.filter((r) => r.status === "error").length,
   };
+
+  // Layer 4 — dolu servisler için gerçek davranış spec'i üret (NOT_IMPLEMENTED stub'ını ezer).
+  // Jest geçidi artık dolu kodu DOĞRULAR (assume etmez).
+  if (opts.withTests && report.filled > 0) {
+    const serviceFiles = [
+      ...new Set(regions.filter((r) => r.status === "filled" && r.file.endsWith(".service.ts")).map((r) => r.file)),
+    ];
+    report.specs = [];
+    for (const f of serviceFiles) {
+      const sr = await generateSpecForService(opts.rootDir, f, opts.complete);
+      report.specs.push(sr);
+      opts.onProgress?.({ nodeId: "", member: `spec ${f}`, file: f, status: sr.status === "written" ? "filled" : "error", attempts: 1, error: sr.error });
+    }
+    const written = report.specs.filter((s) => s.status === "written").map((s) => s.file);
+    if (written.length > 0) {
+      try {
+        fixMissingImportsInFiles(opts.rootDir, written);
+      } catch {
+        /* en iyi çaba */
+      }
+    }
+  }
+
   if (!opts.skipVerify) {
     report.typecheck = typecheck ?? runTypecheck(opts.rootDir);
     if (report.typecheck.ok || report.filled > 0) report.tests = runTests(opts.rootDir);

@@ -19,6 +19,8 @@ export interface FillCommandOptions {
   attempts?: number;
   /** tsc + test geçitlerini atla. */
   skipVerify?: boolean;
+  /** Dolu servisler için gerçek davranış spec'i üret (Layer 4). */
+  withTests?: boolean;
 }
 
 function printRegion(r: FillRegionResult): void {
@@ -51,6 +53,7 @@ export async function fillCommand(opts: FillCommandOptions): Promise<void> {
     region: opts.region,
     maxAttempts: opts.attempts,
     skipVerify: opts.skipVerify,
+    withTests: opts.withTests,
     onProgress: printRegion,
   });
 
@@ -61,6 +64,10 @@ export async function fillCommand(opts: FillCommandOptions): Promise<void> {
 
   console.log("");
   console.log(pc.bold(`Filled ${report.filled} · contract failures ${report.violations} · errors ${report.errors}`));
+  if (report.specs && report.specs.length > 0) {
+    const ok = report.specs.filter((s) => s.status === "written").length;
+    console.log(pc.bold(`Generated ${ok}/${report.specs.length} behavioural specs`));
+  }
   if (report.typecheck) {
     console.log(report.typecheck.ok ? pc.green("✓ typecheck clean") : pc.red(`✗ typecheck failed:\n${report.typecheck.output}`));
   }

@@ -145,8 +145,9 @@ program
   .option("--region <ref>", 'Fill one region: "<nodeId>#<member>" or "<member>"')
   .option("--attempts <n>", "Contract-retry attempts per region (default 3)", (v) => Number.parseInt(v, 10))
   .option("--skip-verify", "Skip the tsc + test gates (contract check only)")
-  .action(async (opts: { all?: boolean; region?: string; attempts?: number; skipVerify?: boolean }) => {
-    await fillCommand({ rootDir: rootDir(), all: opts.all, region: opts.region, attempts: opts.attempts, skipVerify: opts.skipVerify });
+  .option("--with-tests", "Generate real behavioural specs for filled services (verifies, not assumes)")
+  .action(async (opts: { all?: boolean; region?: string; attempts?: number; skipVerify?: boolean; withTests?: boolean }) => {
+    await fillCommand({ rootDir: rootDir(), all: opts.all, region: opts.region, attempts: opts.attempts, skipVerify: opts.skipVerify, withTests: opts.withTests });
   });
 
 program

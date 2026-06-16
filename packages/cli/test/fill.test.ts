@@ -8,6 +8,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { llmConfigFromEnv, stripCodeFences } from "../src/fill/llm.js";
 import { buildFillPrompt } from "../src/fill/prompt.js";
 import { fillRegion, selectSkeletons } from "../src/fill/orchestrator.js";
+import { buildSpecPrompt, generateSpecForService } from "../src/fill/spec.js";
 import type { SurgicalMember } from "@solarch/ast-core";
 
 describe("stripCodeFences", () => {
@@ -107,5 +108,29 @@ export class UserService {
     expect(r.attempts).toBe(2);
     const out = readFileSync(join(dir, "src", "user.service.ts"), "utf8");
     expect(out).toContain("NOT_IMPLEMENTED"); // stub korundu
+  });
+});
+
+describe("buildSpecPrompt + generateSpecForService (Layer 4, mock LLM)", () => {
+  it("prompt servis içeriğini + yüzeyi + import yolunu + jest kurallarını içerir", () => {
+    const msgs = buildSpecPrompt("export class OrderService {}", "class OrderRepository { constructor() }\n  methods: save(o: Order): Promise<Order>", "./order.service");
+    expect(msgs[0]!.content).toContain("jest");
+    expect(msgs[0]!.content.toLowerCase()).toContain("mock");
+    expect(msgs[1]!.content).toContain("export class OrderService");
+    expect(msgs[1]!.content).toContain("save(o: Order)");
+    expect(msgs[1]!.content).toContain("./order.service");
+  });
+
+  it("mock LLM çıktısını <servis>.spec.ts olarak yazar", async () => {
+    const d = mkdtempSync(join(tmpdir(), "spec-"));
+    mkdirSync(join(d, "src"), { recursive: true });
+    writeFileSync(join(d, "src", "order.service.ts"), `import { Injectable } from "@nestjs/common";\n@Injectable()\nexport class OrderService { async list(): Promise<number[]> { return []; } }\n`);
+    const r = await generateSpecForService(d, "src/order.service.ts", async () => "```ts\ndescribe('OrderService', () => { it('works', () => expect(true).toBe(true)); });\n```");
+    expect(r.status).toBe("written");
+    expect(r.file).toBe("src/order.service.spec.ts");
+    const spec = readFileSync(join(d, "src", "order.service.spec.ts"), "utf8");
+    expect(spec).toContain("describe('OrderService'");
+    expect(spec).not.toContain("```"); // çitler soyuldu
+    rmSync(d, { recursive: true, force: true });
   });
 });
