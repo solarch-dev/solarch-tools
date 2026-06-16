@@ -35,6 +35,7 @@ const GROUPS: CommandGroup[] = [
     title: "Build & implementation",
     commands: [
       { name: "generate", args: "[--force]", description: "Scaffold code from cloud graph" },
+      { name: "fill", args: "[--all]", description: "AI-fill skeleton bodies within contract" },
       { name: "status", args: "[--report] [--ci]", description: "Surgical fill rate + contract checks" },
     ],
   },

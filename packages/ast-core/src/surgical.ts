@@ -26,7 +26,7 @@
  *  - access to the class’s OWN helpers/fields is allowed — only DI dependencies
  *    are audited (avoids false positives). */
 
-import { ClassDeclaration, MethodDeclaration, SyntaxKind } from "ts-morph";
+import { ClassDeclaration, MethodDeclaration, Project, SyntaxKind } from "ts-morph";
 
 export type SurgicalStatus = "skeleton" | "filled";
 export type FilledBy = "ai" | "human";
@@ -201,6 +201,119 @@ export interface SurgicalSummary {
   filledAi: number;
   /** Sözleşme ihlali taşıyan üye sayısı. */
   violations: number;
+}
+
+/* ── gövde yazımı (cerrahi AI) ───────────────────────────────────── */
+
+export interface WriteBodyResult {
+  ok: boolean;
+  member: string;
+  /** Yazımdan sonra yeniden denetlenen sözleşme ihlalleri (varsa). */
+  violations?: string[];
+  error?: string;
+}
+
+/** İşaretli bir iskelet metodun gövdesini `bodyCode` ile değiştir.
+ *
+ *  - Marker yorum bloğunu (`// @solarch:surgical` + açıklama/throws/deps) KORUR.
+ *  - Hemen altına `// @solarch:filled by=ai at=<iso>` imzası ekler.
+ *  - `throw new Error("NOT_IMPLEMENTED…")` yerine gerçek kodu koyar.
+ *  - Yazımdan sonra sözleşmeyi (throws/deps) yeniden denetler.
+ *
+ *  In-memory çalışır (SourceFile'ı kaydetmez) — çağıran kaydeder. */
+export function writeSurgicalBody(
+  cls: ClassDeclaration,
+  member: string,
+  bodyCode: string,
+  filledAtIso: string,
+): WriteBodyResult {
+  const method = cls.getMethods().find((m) => {
+    const txt = m.getBody()?.getFullText() ?? "";
+    const mk = MARKER_RE.exec(txt);
+    return mk ? mk[2] === member : m.getName() === member;
+  });
+  if (!method) return { ok: false, member, error: `no surgical region "${member}" in ${cls.getName() ?? "class"}` };
+  if (!method.getBody()) return { ok: false, member, error: `region "${member}" has no body` };
+
+  // Marker yorum bloğunu çıkar: gövdenin başındaki // satırları (ilk kod satırına kadar).
+  const inner = method.getBodyText() ?? "";
+  const markerLines: string[] = [];
+  for (const raw of inner.split("\n")) {
+    const l = raw.trim();
+    if (!l) continue;
+    if (l.startsWith("//")) {
+      if (!FILLED_RE.test(l)) markerLines.push(l); // eski filled imzasını düşür (idempotent)
+      continue;
+    }
+    break; // ilk kod satırı (NOT_IMPLEMENTED throw veya önceki dolum) → blok bitti
+  }
+  if (markerLines.length === 0) return { ok: false, member, error: `region "${member}" has no surgical marker` };
+
+  const filledSig = `// @solarch:filled by=ai at=${filledAtIso}`;
+  method.setBodyText([...markerLines, filledSig, "", bodyCode.trim()].join("\n"));
+
+  const re = readMethodMarker(method, injectedDeps(cls));
+  return { ok: true, member, violations: re?.violations };
+}
+
+/* ── dosya-düzeyi fill köprüsü (ts-morph ast-core'da kapsüllü) ────── */
+
+export interface SurgicalFillContext {
+  /** Doldurulacak metodun imzası (gövde hariç, tek satır). */
+  signature: string;
+  /** Sınıfın constructor'ı — enjekte bağımlılıklar + tipleri. */
+  constructorText: string;
+  /** Dosyanın import satırları. */
+  imports: string;
+}
+
+function methodSignatureText(method: MethodDeclaration): string {
+  const text = method.getText();
+  const brace = text.indexOf("{");
+  return text.slice(0, brace === -1 ? text.length : brace).replace(/\s+/g, " ").trim();
+}
+
+/** İşaretli bir bölge için prompt bağlamı (imza + constructor + import'lar). */
+export function readFillContext(filePath: string, className: string, member: string): SurgicalFillContext | null {
+  const project = new Project({ skipAddingFilesFromTsConfig: true });
+  let sf;
+  try {
+    sf = project.addSourceFileAtPath(filePath);
+  } catch {
+    return null;
+  }
+  const cls = sf.getClass(className);
+  const method = cls?.getMethod(member);
+  if (!cls || !method) return null;
+  return {
+    signature: methodSignatureText(method),
+    constructorText: cls.getConstructors()[0]?.getText() ?? "",
+    imports: sf.getImportDeclarations().map((d) => d.getText()).join("\n"),
+  };
+}
+
+/** Dosyayı taze yükle, gövdeyi yaz, sözleşmeyi denetle; YALNIZ ihlal yoksa kaydet.
+ *  Her çağrı bağımsızdır — başarısız bir deneme diske yazılmadığından sonraki
+ *  denemeyi (taze yüklenen dosyayı) kirletmez. */
+export function tryFillSurgicalBody(
+  filePath: string,
+  className: string,
+  member: string,
+  bodyCode: string,
+  filledAtIso: string,
+): WriteBodyResult {
+  const project = new Project({ skipAddingFilesFromTsConfig: true });
+  let sf;
+  try {
+    sf = project.addSourceFileAtPath(filePath);
+  } catch (e) {
+    return { ok: false, member, error: `cannot read ${filePath}: ${(e as Error).message}` };
+  }
+  const cls = sf.getClass(className);
+  if (!cls) return { ok: false, member, error: `class ${className} not found in ${filePath}` };
+  const res = writeSurgicalBody(cls, member, bodyCode, filledAtIso);
+  if (res.ok && (res.violations?.length ?? 0) === 0) sf.saveSync();
+  return res;
 }
 
 export function summarizeSurgical(members: SurgicalMember[]): SurgicalSummary {

@@ -15,6 +15,7 @@ import { diffCommand } from "./commands/diff.js";
 import { pullCommand } from "./commands/pull.js";
 import { pushCommand } from "./commands/push.js";
 import { generateCommand } from "./commands/generate.js";
+import { fillCommand } from "./commands/fill.js";
 import { bindCommand } from "./commands/bind.js";
 import { watchCommand } from "./commands/watch.js";
 import { cliVersion } from "./version.js";
@@ -23,7 +24,7 @@ const rootDir = () => process.cwd();
 const argv = process.argv.slice(2);
 
 const SUBCOMMANDS = new Set([
-  "connect", "login", "link", "init", "scan", "status", "diff", "pull", "push", "generate", "bind", "watch",
+  "connect", "login", "link", "init", "scan", "status", "diff", "pull", "push", "generate", "fill", "bind", "watch",
 ]);
 
 // Bare `solarch` → branded help (no subcommand).
@@ -135,6 +136,17 @@ program
   .option("--force", "Overwrite existing files (default: skip them)")
   .action(async (opts: { force?: boolean }) => {
     await generateCommand({ rootDir: rootDir(), force: opts.force });
+  });
+
+program
+  .command("fill")
+  .description("Fill NOT_IMPLEMENTED skeleton bodies with AI, within each region's contract")
+  .option("--all", "Fill every skeleton region in the repo")
+  .option("--region <ref>", 'Fill one region: "<nodeId>#<member>" or "<member>"')
+  .option("--attempts <n>", "Contract-retry attempts per region (default 3)", (v) => Number.parseInt(v, 10))
+  .option("--skip-verify", "Skip the tsc + test gates (contract check only)")
+  .action(async (opts: { all?: boolean; region?: string; attempts?: number; skipVerify?: boolean }) => {
+    await fillCommand({ rootDir: rootDir(), all: opts.all, region: opts.region, attempts: opts.attempts, skipVerify: opts.skipVerify });
   });
 
 program

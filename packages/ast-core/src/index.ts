@@ -3,11 +3,16 @@ export { classifyClass } from "./classify.js";
 export { scanProject, type ScanOptions } from "./scan.js";
 export {
   readSurgicalMembers,
+  readFillContext,
   summarizeSurgical,
+  tryFillSurgicalBody,
+  writeSurgicalBody,
   type FilledBy,
+  type SurgicalFillContext,
   type SurgicalMember,
   type SurgicalStatus,
   type SurgicalSummary,
+  type WriteBodyResult,
 } from "./surgical.js";
 export { cleanTypeText, unwrapTypeName } from "./extract.js";
 export {
