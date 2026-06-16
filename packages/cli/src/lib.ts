@@ -81,3 +81,5 @@ export {
 } from "./fill/orchestrator.js";
 
 export { createCompleter, llmConfigFromEnv, type CompleteFn, type LlmConfig } from "./fill/llm.js";
+
+export { generateSpecForService, type SpecResult } from "./fill/spec.js";

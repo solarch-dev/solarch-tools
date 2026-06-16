@@ -125,7 +125,7 @@ describe("buildSpecPrompt + generateSpecForService (Layer 4, mock LLM)", () => {
     const d = mkdtempSync(join(tmpdir(), "spec-"));
     mkdirSync(join(d, "src"), { recursive: true });
     writeFileSync(join(d, "src", "order.service.ts"), `import { Injectable } from "@nestjs/common";\n@Injectable()\nexport class OrderService { async list(): Promise<number[]> { return []; } }\n`);
-    const r = await generateSpecForService(d, "src/order.service.ts", async () => "```ts\ndescribe('OrderService', () => { it('works', () => expect(true).toBe(true)); });\n```");
+    const r = await generateSpecForService(d, "src/order.service.ts", async () => "```ts\ndescribe('OrderService', () => { it('works', () => expect(true).toBe(true)); });\n```", { skipRun: true });
     expect(r.status).toBe("written");
     expect(r.file).toBe("src/order.service.spec.ts");
     const spec = readFileSync(join(d, "src", "order.service.spec.ts"), "utf8");

@@ -54,3 +54,12 @@ export function runTests(rootDir: string): VerifyResult {
   const { code, output } = run(pm, pm === "npm" ? ["test", "--silent"] : ["test"], rootDir);
   return { ok: code === 0, output: output || (code === 0 ? "tests passed" : "tests failed") };
 }
+
+/** Tek bir spec dosyasını jest ile koş (spec-repair için). */
+export function runJestFile(rootDir: string, specRelFile: string): VerifyResult {
+  const localJest = join(rootDir, "node_modules", ".bin", "jest");
+  const { code, output } = existsSync(localJest)
+    ? run(localJest, [specRelFile, "--silent"], rootDir)
+    : run("npx", ["--no-install", "jest", specRelFile, "--silent"], rootDir);
+  return { ok: code === 0, output: output || (code === 0 ? "spec passed" : "spec failed") };
+}

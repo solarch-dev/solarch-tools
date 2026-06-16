@@ -278,6 +278,12 @@ export function fixMissingImportsInFiles(rootDir: string, relFiles: string[]): {
     const sf = project.getSourceFile(resolve(rootDir, rel));
     if (!sf) continue;
     try {
+      // Çözülmeyen GÖRELİ import'ları (yanlış yol — örn. `../../` yerine `../`) kaldır;
+      // ardından fixMissingImports doğru yolla yeniden ekler. Üçüncü-parti (./'sız) kalır.
+      for (const imp of sf.getImportDeclarations()) {
+        const spec = imp.getModuleSpecifierValue();
+        if (spec.startsWith(".") && !imp.getModuleSpecifierSourceFile()) imp.remove();
+      }
       sf.fixMissingImports();
       fixed.push(rel);
     } catch {
