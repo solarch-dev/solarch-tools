@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WILDCARD_CONTROLLER_KEY, type AsIsGraph } from "@solarch/ast-core";
+import { WILDCARD_CONTROLLER_KEY, WILDCARD_SERVICE_KEY, type AsIsGraph } from "@solarch/ast-core";
 import { diffGraphs } from "../src/diff/engine.js";
 import type { CloudGraph, RuleCatalog } from "../src/api.js";
 
@@ -353,6 +353,55 @@ describe("diffGraphs", () => {
     );
     const r = diffGraphs(code, cloud, null, {});
     expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_NOT_IN_CLOUD")).toEqual([]);
+  });
+
+  it("Controller nested DTO'yu dıştaki DTO üzerinden kullanınca USES karşılanır, HAS gürültü yapmaz", () => {
+    const code = asIs();
+    code.nodes.push(
+      { key: "Controller:orderscontroller", kind: "Controller", name: "OrdersController", file: "src/orders/orders.controller.ts", properties: { ControllerName: "OrdersController" } },
+      { key: "DTO:ordercreaterequest", kind: "DTO", name: "OrderCreateRequest", file: "src/orders/dto/order-create.request.ts", properties: { Name: "OrderCreateRequest" } },
+      { key: "DTO:orderitemrequest", kind: "DTO", name: "OrderItemRequest", file: "src/orders/dto/order-item.request.ts", properties: { Name: "OrderItemRequest" } },
+    );
+    code.edges.push(
+      { key: "Controller:orderscontroller -[USES]-> DTO:ordercreaterequest", kind: "USES", sourceKey: "Controller:orderscontroller", targetKey: "DTO:ordercreaterequest", file: "src/orders/orders.controller.ts", reason: "parameter type OrderCreateRequest" },
+      { key: "DTO:ordercreaterequest -[HAS]-> DTO:orderitemrequest", kind: "HAS", sourceKey: "DTO:ordercreaterequest", targetKey: "DTO:orderitemrequest", file: "src/orders/dto/order-create.request.ts", reason: "nested field type OrderItemRequest" },
+    );
+    const cloud = toBe();
+    cloud.nodes.push(
+      { id: "n3", type: "Controller", projectId: "p1", version: 1, properties: { ControllerName: "OrdersController" } },
+      { id: "n4", type: "DTO", projectId: "p1", version: 1, properties: { Name: "OrderCreateRequest", Fields: [{ Name: "items", NestedDTORef: "OrderItemRequest" }] } },
+      { id: "n5", type: "DTO", projectId: "p1", version: 1, properties: { Name: "OrderItemRequest" } },
+    );
+    cloud.edges.push(
+      { id: "e3", kind: "USES", sourceNodeId: "n3", targetNodeId: "n4", properties: {} }, // dıştaki: doğrudan eşleşir
+      { id: "e4", kind: "USES", sourceNodeId: "n3", targetNodeId: "n5", properties: {} }, // flatten nested: transitif karşılanır
+    );
+    const r = diffGraphs(code, cloud, null, {});
+    expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_MISSING_IN_CODE")).toEqual([]);
+    expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_NOT_IN_CLOUD")).toEqual([]);
+  });
+
+  it("merkezi process.env okuması: cloud Service READS_CONFIG joker üzerinden karşılanır; fazlalık env var gürültü yapmaz", () => {
+    const code = asIs();
+    code.nodes.push(
+      { key: "EnvironmentVariable:jwtsecret", kind: "EnvironmentVariable", name: "JWT_SECRET", file: "src/config/configuration.ts", properties: { Key: "JWT_SECRET" } },
+      { key: "EnvironmentVariable:nodeenv", kind: "EnvironmentVariable", name: "NODE_ENV", file: "src/config/configuration.ts", properties: { Key: "NODE_ENV" } }, // cloud'da YOK
+    );
+    code.edges.push({
+      key: `${WILDCARD_SERVICE_KEY} -[READS_CONFIG]-> EnvironmentVariable:jwtsecret`,
+      kind: "READS_CONFIG",
+      sourceKey: WILDCARD_SERVICE_KEY,
+      targetKey: "EnvironmentVariable:jwtsecret",
+      file: "src/config/configuration.ts",
+      reason: "process.env.JWT_SECRET",
+    });
+    const cloud = toBe();
+    cloud.nodes.push({ id: "n6", type: "EnvironmentVariable", projectId: "p1", version: 1, properties: { Key: "JWT_SECRET" } });
+    cloud.edges.push({ id: "e6", kind: "READS_CONFIG", sourceNodeId: "n1", targetNodeId: "n6", properties: {} }); // UsersService READS_CONFIG JWT_SECRET
+    const r = diffGraphs(code, cloud, null, {});
+    expect(r.findings.filter((f) => f.code === "DRIFT_NODE_MISSING_IN_CODE")).toEqual([]); // JWT_SECRET eşleşti
+    expect(r.findings.filter((f) => f.code === "DRIFT_NODE_NOT_IN_CLOUD")).toEqual([]); // NODE_ENV bastırıldı
+    expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_MISSING_IN_CODE")).toEqual([]); // READS_CONFIG joker karşıladı
   });
 
   it("rules null ise legalite kontrolü atlanır (offline)", () => {

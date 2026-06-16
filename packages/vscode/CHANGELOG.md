@@ -3,6 +3,19 @@
 All notable changes to the Solarch VS Code extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.8.3] — 2026-06-16
+
+### Fixed
+Drift-to-zero pass 2 — two more representation mismatches resolved:
+- **Nested DTOs** — a controller that uses an outer DTO (`OrderCreateRequest`) now
+  satisfies the architecture's edge to a DTO nested inside it (`OrderItemRequest`)
+  through the `HAS` chain, instead of reporting the nested DTO as unused.
+- **Environment variables** — the scanner now extracts `process.env.X` references as
+  EnvironmentVariable nodes, so the architecture's env vars match the code. Extra
+  operational vars the diagram doesn't model (`NODE_ENV`, `LOG_LEVEL`, …) are treated as
+  below the architecture's threshold rather than as drift, and a central config read
+  satisfies any service's `READS_CONFIG` commitment for that var.
+
 ## [0.8.2] — 2026-06-16
 
 ### Fixed

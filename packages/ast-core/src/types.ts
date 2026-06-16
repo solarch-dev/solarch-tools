@@ -64,6 +64,12 @@ export function nameOfNode(kind: NodeKind, properties: Record<string, unknown>):
  *  ayrı edge üretip gürültü yapmaz). Gerçek bir node'a karşılık gelmez. */
 export const WILDCARD_CONTROLLER_KEY = "Controller:*";
 
+/** Merkezi config factory'sinin (process.env.X) okuduğu env var'lar için sentinel
+ *  kaynak — "herhangi bir servis". Diff bunu, o env var'a yönelik herhangi bir
+ *  Service READS_CONFIG taahhüdünü karşılayan joker sayar (NestJS merkezi ConfigService
+ *  deseni: servisler ConfigService inject eder, env merkezden okunur). Gerçek node değil. */
+export const WILDCARD_SERVICE_KEY = "Service:*";
+
 /** Kanonik isim — eşleştirme anahtarı: küçük harf + yalnız alfanumerik.
  *  "UsersService", "users-service" ve "users_service" aynı anahtara düşer. */
 export function canonicalName(name: string): string {

@@ -29,6 +29,7 @@ import {
   extractTable,
   extractThrownExceptionNames,
   extractWorker,
+  extractEnvVarRefs,
   type MiddlewareRoute,
 } from "./extract.js";
 import {
@@ -38,6 +39,7 @@ import {
   type EdgeKind,
   type NodeKind,
   WILDCARD_CONTROLLER_KEY,
+  WILDCARD_SERVICE_KEY,
   edgeKey,
   nodeKey,
 } from "./types.js";
@@ -350,6 +352,22 @@ export function scanProject(opts: ScanOptions): AsIsGraph {
         if (base?.kind === "Exception") addEdge(node.key, "EXTENDS", base.key, node.file, `extends ${ext}`);
       }
     }
+  }
+
+  // Env var'lar (process.env.X) — sınıf değil, ayrı tarama. As-Is EnvironmentVariable
+  // node'u + merkezi okuma için joker READS_CONFIG edge'i (hangi servisin okuduğu merkezi
+  // ConfigService deseninde atfedilemez; cloud Service->READS_CONFIG->var bu jokerle karşılanır).
+  const envVarFile = new Map<string, string>();
+  for (const sf of sourceFiles) {
+    const f = relPath(sf.getFilePath());
+    for (const v of extractEnvVarRefs(sf)) if (!envVarFile.has(v)) envVarFile.set(v, f);
+  }
+  for (const [v, f] of envVarFile) {
+    const node: AsIsNode = { key: nodeKey("EnvironmentVariable", v), kind: "EnvironmentVariable", name: v, file: f, properties: { Key: v } };
+    if (registry.has(node.name)) continue; // sınıf adıyla çakışma (olası değil) → atla
+    registry.set(node.name, { node, cls: null });
+    nodes.push(node);
+    addEdge(WILDCARD_SERVICE_KEY, "READS_CONFIG", node.key, f, `process.env.${v}`);
   }
 
   // Module configure() yönlendirmeleri — Module artık As-Is node olmadığından registry

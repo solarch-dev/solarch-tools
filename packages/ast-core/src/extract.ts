@@ -11,8 +11,26 @@ import {
   EnumDeclaration,
   Node as TsNode,
   PropertyDeclaration,
+  SourceFile,
   SyntaxKind,
 } from "ts-morph";
+
+/** Bir dosyadaki `process.env.X` / `process.env["X"]` env-var isimleri.
+ *  Env var'lar sınıf değildir; sınıf-tabanlı tarama dışında ayrı toplanır. */
+export function extractEnvVarRefs(sf: SourceFile): string[] {
+  const names = new Set<string>();
+  for (const pa of sf.getDescendantsOfKind(SyntaxKind.PropertyAccessExpression)) {
+    if (pa.getExpression().getText() === "process.env") names.add(pa.getName());
+  }
+  for (const ea of sf.getDescendantsOfKind(SyntaxKind.ElementAccessExpression)) {
+    if (ea.getExpression().getText() !== "process.env") continue;
+    const arg = ea.getArgumentExpression();
+    if (arg && (TsNode.isStringLiteral(arg) || TsNode.isNoSubstitutionTemplateLiteral(arg))) {
+      names.add(arg.getLiteralText());
+    }
+  }
+  return [...names];
+}
 
 /* ── ortak yardımcılar ──────────────────────────────────────────── */
 
@@ -311,6 +329,14 @@ function isDtoish(name: string): boolean {
   return /(Dto|DTO)$/.test(name);
 }
 
+/** Nested DTO alan tipi — DTO/Request/Response son ekli. isDtoish'ten geniş:
+ *  request/response gövdeleri iç içe geçer (OrderCreateRequest.Items: OrderItemRequest[]).
+ *  HAS edge'i scan'de yine resolve() ile DTO node'una bağlanırken doğrulanır, o yüzden
+ *  yanlış-pozitif (örn. AxiosResponse) edge üretmez. */
+function isNestedDtoRef(name: string): boolean {
+  return /(Dto|DTO|Request|Response)$/.test(name);
+}
+
 export function extractService(cls: ClassDeclaration): {
   properties: Record<string, unknown>;
   extras: ServiceExtras;
@@ -392,7 +418,7 @@ export function extractDto(cls: ClassDeclaration): {
 
     const isEnumRef = prop.getDecorators().some((d) => d.getName() === "IsEnum");
     if (isEnumRef) enumRefs.push(core);
-    const isNested = isDtoish(core) && core !== className;
+    const isNested = isNestedDtoRef(core) && core !== className;
     if (isNested) nestedDtoRefs.push(core);
 
     fields.push({

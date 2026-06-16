@@ -1,6 +1,6 @@
 {
   "name": "@solarch/ast-core",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "NestJS AST read/write engine — extracts the As-Is architecture graph and performs safe property injection",
   "type": "module",
   "license": "SEE LICENSE IN ../../LICENSE",

@@ -15,6 +15,7 @@ import {
   nameOfNode,
   nodeKey,
   WILDCARD_CONTROLLER_KEY,
+  WILDCARD_SERVICE_KEY,
   type AsIsEdge,
   type AsIsGraph,
   type AsIsNode,
@@ -224,6 +225,10 @@ export function diffGraphs(
   }
   for (const node of asIs.nodes) {
     if (codeKeyToCloudId.has(node.key)) continue;
+    // EnvironmentVariable: altyapı konfigürasyonu, mimarinin kürasyon eşiğinin altında.
+    // Yalnız cloud'un açıkça modellediği env var'lar drift sayılır; kod NODE_ENV/LOG_LEVEL
+    // gibi fazladan env var kullansa da bunlar gürültü değildir.
+    if (node.kind === "EnvironmentVariable") continue;
     findings.push({
       severity: "warn",
       code: "DRIFT_NODE_NOT_IN_CLOUD",
@@ -264,8 +269,14 @@ export function diffGraphs(
   }
 
   // Alan-düzeyi referans = edge taahhüdü. Cloud bir DTO/Table alanında EnumRef taşıyorsa
-  // (örn. @IsEnum), kod bunu USES->Enum edge'iyle gerçekleştirir; cloud'da edge çizilmemiş
-  // olsa da alan taahhüdü karşılar (EDGE_KIND_SUBSUMES ile aynı mantık, alan düzeyinde).
+  // kod bunu USES->Enum ile, NestedDTORef taşıyorsa HAS->DTO ile gerçekleştirir; cloud'da
+  // edge çizilmemiş olsa da alan taahhüdü karşılar (EDGE_KIND_SUBSUMES'in alan-düzeyi hâli).
+  const addFieldDerivedEdge = (srcKey: string, refKind: NodeKind, edgeKind: EdgeKind, ref: unknown): void => {
+    if (typeof ref !== "string" || !ref) return;
+    const refCloud = cloudByKey.get(nodeKey(refKind, ref));
+    const tgtKey = refCloud && cloudIdToCodeKey.get(refCloud.id);
+    if (tgtKey) cloudEdgeSet.add(`${srcKey}|${edgeKind}|${tgtKey}`);
+  };
   for (const cloud of toBe.nodes) {
     const srcKey = cloudIdToCodeKey.get(cloud.id);
     if (!srcKey) continue;
@@ -274,13 +285,44 @@ export function diffGraphs(
     const items = (cloud.properties as Record<string, unknown>)[listField];
     if (!Array.isArray(items)) continue;
     for (const it of items) {
-      const ref = it && typeof it === "object" ? (it as Record<string, unknown>).EnumRef : undefined;
-      if (typeof ref !== "string" || !ref) continue;
-      const enumCloud = cloudByKey.get(nodeKey("Enum", ref));
-      const tgtKey = enumCloud && cloudIdToCodeKey.get(enumCloud.id);
-      if (tgtKey) cloudEdgeSet.add(`${srcKey}|USES|${tgtKey}`);
+      if (!it || typeof it !== "object") continue;
+      const field = it as Record<string, unknown>;
+      addFieldDerivedEdge(srcKey, "Enum", "USES", field.EnumRef);
+      if (cloud.type === "DTO") addFieldDerivedEdge(srcKey, "DTO", "HAS", field.NestedDTORef);
     }
   }
+
+  // Nested-DTO geçişliliği: cloud Controller/Service -USES-> DtoX, kodda kaynak DtoP'yi
+  // (USES/RETURNS) kullanıp DtoP -HAS-> ... -> DtoX zinciriyle DtoX'e ulaşıyorsa karşılanır.
+  // (OrderController OrderCreateRequest'i kullanır; o da OrderItemRequest'i nest'ler.)
+  const directDtoTargets = new Map<string, Set<string>>();
+  const hasChildren = new Map<string, Set<string>>();
+  for (const e of asIs.edges) {
+    if ((e.kind === "USES" || e.kind === "RETURNS") && e.targetKey.startsWith("DTO:")) {
+      (directDtoTargets.get(e.sourceKey) ?? directDtoTargets.set(e.sourceKey, new Set()).get(e.sourceKey)!).add(e.targetKey);
+    }
+    if (e.kind === "HAS") {
+      (hasChildren.get(e.sourceKey) ?? hasChildren.set(e.sourceKey, new Set()).get(e.sourceKey)!).add(e.targetKey);
+    }
+  }
+  const usesSatisfiedViaNesting = (srcKey: string, tgtKey: string): boolean => {
+    if (!tgtKey.startsWith("DTO:")) return false;
+    const start = directDtoTargets.get(srcKey);
+    if (!start) return false;
+    const seen = new Set(start);
+    const queue = [...start];
+    while (queue.length) {
+      const cur = queue.shift()!;
+      if (cur === tgtKey) return true;
+      for (const child of hasChildren.get(cur) ?? []) {
+        if (!seen.has(child)) {
+          seen.add(child);
+          queue.push(child);
+        }
+      }
+    }
+    return false;
+  };
 
   for (const edge of toBe.edges) {
     const srcKey = cloudIdToCodeKey.get(edge.sourceNodeId);
@@ -291,7 +333,12 @@ export function diffGraphs(
       // Global middleware joker'i: forRoutes("*") o kaynaktan tüm controller'lara routes_to taahhüdünü karşılar.
       (edge.kind === "ROUTES_TO" && asIsEdgeSet.has(`${srcKey}|ROUTES_TO|${WILDCARD_CONTROLLER_KEY}`)) ||
       // İskelet stub'ın surgical `throws:` kontratı THROWS taahhüdünü karşılar.
-      (edge.kind === "THROWS" && throwsDeclaredInSkeleton(srcKey, tgtKey));
+      (edge.kind === "THROWS" && throwsDeclaredInSkeleton(srcKey, tgtKey)) ||
+      // Controller/Service nested DTO'yu, dıştaki DTO'yu kullanıp nesting üstünden karşılar.
+      (edge.kind === "USES" && usesSatisfiedViaNesting(srcKey, tgtKey)) ||
+      // Merkezi config okuması joker'i: process.env.X merkezde okunduğunda, herhangi bir
+      // Service READS_CONFIG X taahhüdü karşılanır (servisler ConfigService inject eder).
+      (edge.kind === "READS_CONFIG" && asIsEdgeSet.has(`${WILDCARD_SERVICE_KEY}|READS_CONFIG|${tgtKey}`));
     if (!satisfiedInCode) {
       findings.push({
         severity: "error",
