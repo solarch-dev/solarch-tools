@@ -7,7 +7,7 @@
 
 import pc from "picocolors";
 import { llmConfigFromEnv } from "../fill/llm.js";
-import { fillProject, type FillRegionResult } from "../fill/orchestrator.js";
+import { fillProject, selectSkeletons, type FillRegionResult } from "../fill/orchestrator.js";
 
 export interface FillCommandOptions {
   rootDir: string;
@@ -52,6 +52,16 @@ export async function fillCommand(opts: FillCommandOptions): Promise<void> {
     return;
   }
   if (!opts.json) console.log(pc.dim(`Filling skeletons with ${config.model}`));
+
+  // json: gerçek doldurulacak bölge sayısını BAŞTA bildir — UI sayacının paydası
+  // bu olsun (surgical-marker sayısı ≠ skeleton-bölge sayısı olabilir).
+  if (opts.json) {
+    try {
+      emit({ event: "begin", total: selectSkeletons(opts.rootDir, opts.region).length });
+    } catch {
+      /* tarama başarısızsa begin atlanır; UI marker sayısına düşer */
+    }
+  }
 
   const report = await fillProject({
     rootDir: opts.rootDir,
