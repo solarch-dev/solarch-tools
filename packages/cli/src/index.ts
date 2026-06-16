@@ -146,8 +146,9 @@ program
   .option("--attempts <n>", "Contract-retry attempts per region (default 3)", (v) => Number.parseInt(v, 10))
   .option("--skip-verify", "Skip the tsc + test gates (contract check only)")
   .option("--with-tests", "Generate real behavioural specs for filled services (verifies, not assumes)")
-  .action(async (opts: { all?: boolean; region?: string; attempts?: number; skipVerify?: boolean; withTests?: boolean }) => {
-    await fillCommand({ rootDir: rootDir(), all: opts.all, region: opts.region, attempts: opts.attempts, skipVerify: opts.skipVerify, withTests: opts.withTests });
+  .option("--json", "Machine-readable NDJSON progress (one line per region + a final report)")
+  .action(async (opts: { all?: boolean; region?: string; attempts?: number; skipVerify?: boolean; withTests?: boolean; json?: boolean }) => {
+    await fillCommand({ rootDir: rootDir(), all: opts.all, region: opts.region, attempts: opts.attempts, skipVerify: opts.skipVerify, withTests: opts.withTests, json: opts.json });
   });
 
 program

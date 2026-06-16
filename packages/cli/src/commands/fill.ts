@@ -21,6 +21,9 @@ export interface FillCommandOptions {
   skipVerify?: boolean;
   /** Dolu servisler için gerçek davranış spec'i üret (Layer 4). */
   withTests?: boolean;
+  /** Makine-okur NDJSON ilerleme (renkli metin yerine). Sunucu fill servisi bunu
+   *  parse edip SSE'ye çevirir: bölge başına bir satır + sonda bir `report`. */
+  json?: boolean;
 }
 
 function printRegion(r: FillRegionResult): void {
@@ -34,18 +37,21 @@ function printRegion(r: FillRegionResult): void {
 }
 
 export async function fillCommand(opts: FillCommandOptions): Promise<void> {
+  const emit = (o: Record<string, unknown>) => process.stdout.write(JSON.stringify(o) + "\n");
   if (!opts.region && !opts.all) {
-    console.error(pc.red("Nothing selected. Use --all, or --region <nodeId#member>."));
+    if (opts.json) emit({ event: "fatal", message: "Nothing selected. Use --all or --region." });
+    else console.error(pc.red("Nothing selected. Use --all, or --region <nodeId#member>."));
     process.exitCode = 1;
     return;
   }
   const config = llmConfigFromEnv();
   if (!config.apiKey) {
-    console.error(pc.red("No LLM API key. Set DEEPSEEK_API_KEY (or SOLARCH_FILL_API_KEY) in the environment."));
+    if (opts.json) emit({ event: "fatal", message: "No LLM API key (DEEPSEEK_API_KEY / SOLARCH_FILL_API_KEY)." });
+    else console.error(pc.red("No LLM API key. Set DEEPSEEK_API_KEY (or SOLARCH_FILL_API_KEY) in the environment."));
     process.exitCode = 1;
     return;
   }
-  console.log(pc.dim(`Filling skeletons with ${config.model}`));
+  if (!opts.json) console.log(pc.dim(`Filling skeletons with ${config.model}`));
 
   const report = await fillProject({
     rootDir: opts.rootDir,
@@ -54,8 +60,24 @@ export async function fillCommand(opts: FillCommandOptions): Promise<void> {
     maxAttempts: opts.attempts,
     skipVerify: opts.skipVerify,
     withTests: opts.withTests,
-    onProgress: printRegion,
+    onProgress: opts.json
+      ? (r) => emit({ event: "region", status: r.status, member: r.member, file: r.file, attempts: r.attempts, violations: r.violations, error: r.error })
+      : printRegion,
   });
+
+  if (opts.json) {
+    emit({
+      event: "report",
+      filled: report.filled,
+      violations: report.violations,
+      errors: report.errors,
+      specs: report.specs?.map((s) => ({ file: s.file, status: s.status, passed: s.passed })),
+      typecheck: report.typecheck ? { ok: report.typecheck.ok } : undefined,
+      tests: report.tests ? { ok: report.tests.ok, skipped: report.tests.skipped } : undefined,
+    });
+    if (report.violations > 0 || report.errors > 0 || (report.typecheck && !report.typecheck.ok)) process.exitCode = 1;
+    return;
+  }
 
   if (report.regions.length === 0) {
     console.log(pc.green("No skeleton regions to fill — everything is already implemented."));
