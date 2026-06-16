@@ -19,6 +19,7 @@ const GROUPS: CommandGroup[] = [
       { name: "connect", description: "Sign in + link this repo (start here)" },
       { name: "login", description: "Sign in with API key only" },
       { name: "link", description: "Link folder to a Solarch project" },
+      { name: "init", args: "[--name <n>]", description: "Import an existing repo → new project (brownfield)" },
     ],
   },
   {

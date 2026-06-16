@@ -191,6 +191,14 @@ export class SolarchApi {
     return data.projects;
   }
 
+  /** Yeni boş proje oluştur (brownfield import — `solarch init`). */
+  createProject(name: string, description = ""): Promise<ProjectSummary> {
+    return this.request<ProjectSummary>("/projects", {
+      method: "POST",
+      body: JSON.stringify({ name, description }),
+    });
+  }
+
   getGraph(projectId: string): Promise<CloudGraph> {
     return this.request<CloudGraph>(`/projects/${projectId}/graph`);
   }

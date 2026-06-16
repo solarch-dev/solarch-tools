@@ -8,6 +8,7 @@ import { renderVersionScreen } from "./brand.js";
 import { connectCommand } from "./commands/connect.js";
 import { loginCommand } from "./commands/login.js";
 import { linkCommand } from "./commands/link.js";
+import { initCommand } from "./commands/init.js";
 import { scanCommand } from "./commands/scan.js";
 import { statusCommand } from "./commands/status.js";
 import { diffCommand } from "./commands/diff.js";
@@ -22,7 +23,7 @@ const rootDir = () => process.cwd();
 const argv = process.argv.slice(2);
 
 const SUBCOMMANDS = new Set([
-  "connect", "login", "link", "scan", "status", "diff", "pull", "push", "generate", "bind", "watch",
+  "connect", "login", "link", "init", "scan", "status", "diff", "pull", "push", "generate", "bind", "watch",
 ]);
 
 // Bare `solarch` → branded help (no subcommand).
@@ -73,6 +74,15 @@ program
   .option("--project <id>", "Project id (skips interactive selection)")
   .action(async (opts: { project?: string }) => {
     await linkCommand({ project: opts.project, rootDir: rootDir() });
+  });
+
+program
+  .command("init")
+  .description("Import this existing NestJS repo into a new Solarch project (brownfield)")
+  .option("--name <name>", "Project name (default: repo folder name)")
+  .option("--force", "Import into a new project even if solarch.json already exists")
+  .action(async (opts: { name?: string; force?: boolean }) => {
+    await initCommand({ rootDir: rootDir(), name: opts.name, force: opts.force });
   });
 
 program
