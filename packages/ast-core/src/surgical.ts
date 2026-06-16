@@ -26,7 +26,9 @@
  *  - access to the class’s OWN helpers/fields is allowed — only DI dependencies
  *    are audited (avoids false positives). */
 
-import { ClassDeclaration, MethodDeclaration, Project, SyntaxKind } from "ts-morph";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { ClassDeclaration, EnumDeclaration, MethodDeclaration, Project, SyntaxKind } from "ts-morph";
 
 export type SurgicalStatus = "skeleton" | "filled";
 export type FilledBy = "ai" | "human";
@@ -256,6 +258,36 @@ export function writeSurgicalBody(
   return { ok: true, member, violations: re?.violations };
 }
 
+/** Dolan gövdeler yerel tipler (örn. bir entity) kullanıp dosya başına import
+ *  EKLEYEMEZ (yalnız gövde yazılır). Bu pas, projenin tamamını yükleyip her dolu
+ *  dosyada eksik import'ları TS dil servisiyle ekler (`new Complaint()` → import). */
+export function fixMissingImportsInFiles(rootDir: string, relFiles: string[]): { fixed: string[] } {
+  const tsconfig = join(rootDir, "tsconfig.json");
+  const project = existsSync(tsconfig)
+    ? new Project({ tsConfigFilePath: tsconfig })
+    : new Project({ skipAddingFilesFromTsConfig: true });
+  if (!existsSync(tsconfig)) {
+    try {
+      project.addSourceFilesAtPaths(join(rootDir, "src/**/*.ts"));
+    } catch {
+      return { fixed: [] };
+    }
+  }
+  const fixed: string[] = [];
+  for (const rel of relFiles) {
+    const sf = project.getSourceFile(resolve(rootDir, rel));
+    if (!sf) continue;
+    try {
+      sf.fixMissingImports();
+      fixed.push(rel);
+    } catch {
+      /* dil servisi çözemezse atla */
+    }
+  }
+  project.saveSync();
+  return { fixed };
+}
+
 /* ── dosya-düzeyi fill köprüsü (ts-morph ast-core'da kapsüllü) ────── */
 
 export interface SurgicalFillContext {
@@ -290,6 +322,96 @@ export function readFillContext(filePath: string, className: string, member: str
     constructorText: cls.getConstructors()[0]?.getText() ?? "",
     imports: sf.getImportDeclarations().map((d) => d.getText()).join("\n"),
   };
+}
+
+/* ── bağımlılık-yüzeyi (grounding — halüsinasyonu engeller) ──────── */
+
+function cleanType(t: string): string {
+  return t.replace(/import\([^)]*\)\./g, "").replace(/\s+/g, " ").trim();
+}
+
+/** Bir sınıfın çağrılabilir yüzeyi: constructor arity, public metod imzaları,
+ *  public alanlar. AI'ın var olmayan metod/arity uydurmasını engeller. */
+function describeClass(cls: ClassDeclaration): string {
+  const name = cls.getName() ?? "?";
+  const ctor = cls.getConstructors()[0];
+  const ctorParams = ctor
+    ? ctor.getParameters().map((p) => `${p.getName()}: ${cleanType(p.getTypeNode()?.getText() ?? "unknown")}`).join(", ")
+    : "";
+  const methods = cls
+    .getMethods()
+    .filter((m) => m.getScope() !== "private" && m.getScope() !== "protected")
+    .map((m) => {
+      const params = m.getParameters().map((p) => `${p.getName()}: ${cleanType(p.getTypeNode()?.getText() ?? "unknown")}`).join(", ");
+      return `${m.getName()}(${params}): ${cleanType(m.getReturnTypeNode()?.getText() ?? "void")}`;
+    });
+  const fields = cls
+    .getProperties()
+    .filter((p) => !p.isStatic() && p.getScope() !== "private")
+    .map((p) => `${p.getName()}: ${cleanType(p.getTypeNode()?.getText() ?? "unknown")}`);
+  const lines = [`class ${name} { constructor(${ctorParams}) }`];
+  if (methods.length) lines.push(`  methods: ${methods.join("; ")}`);
+  if (fields.length) lines.push(`  fields: ${fields.join(", ")}`);
+  return lines.join("\n");
+}
+
+/** Bir enum'un üyeleri + değerleri (state/transition mantığı değer üstünden kurulsun diye). */
+function describeEnum(en: EnumDeclaration): string {
+  const members = en.getMembers().map((m) => {
+    const v = m.getValue();
+    return v === undefined ? m.getName() : `${m.getName()} = ${JSON.stringify(v)}`;
+  });
+  return `enum ${en.getName() ?? "?"} { ${members.join(", ")} }`;
+}
+
+function resolveLocalImport(fromDir: string, spec: string): string | null {
+  for (const cand of [`${spec}.ts`, join(spec, "index.ts")]) {
+    const p = resolve(fromDir, cand);
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** Dolan dosyanın yerel import'larından çağrılabilir API yüzeyini çıkar:
+ *  her import edilen sınıf/enum için imzalar/üyeler. Prompt'a gömülür ki AI
+ *  metod/arity/exception-ctor/enum-değeri UYDURMASIN, gerçeğini kullansın. */
+export function readDeclaredSurface(filePath: string): string {
+  const project = new Project({ skipAddingFilesFromTsConfig: true });
+  let sf;
+  try {
+    sf = project.addSourceFileAtPath(filePath);
+  } catch {
+    return "";
+  }
+  const fromDir = dirname(filePath);
+  const blocks: string[] = [];
+  const seen = new Set<string>();
+  for (const imp of sf.getImportDeclarations()) {
+    const spec = imp.getModuleSpecifierValue();
+    if (!spec.startsWith(".")) continue; // yalnız yerel tipler (3. parti değil)
+    const resolved = resolveLocalImport(fromDir, spec);
+    if (!resolved) continue;
+    let depSf;
+    try {
+      depSf = project.addSourceFileAtPath(resolved);
+    } catch {
+      continue;
+    }
+    for (const named of imp.getNamedImports()) {
+      const n = named.getName();
+      if (seen.has(n)) continue;
+      const cls = depSf.getClass(n);
+      const en = depSf.getEnum(n);
+      if (cls) {
+        blocks.push(describeClass(cls));
+        seen.add(n);
+      } else if (en) {
+        blocks.push(describeEnum(en));
+        seen.add(n);
+      }
+    }
+  }
+  return blocks.join("\n");
 }
 
 /** Dosyayı taze yükle, gövdeyi yaz, sözleşmeyi denetle; YALNIZ ihlal yoksa kaydet.

@@ -1,9 +1,12 @@
 /** writeSurgicalBody — iskelet metot gövdesini gerçek kodla değiştirme,
  *  marker'ı koruma, filled imzası, sözleşme yeniden denetimi. */
 
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { Project } from "ts-morph";
-import { writeSurgicalBody } from "../src/surgical.js";
+import { readDeclaredSurface, writeSurgicalBody } from "../src/surgical.js";
 
 const SKELETON = `import { Injectable } from "@nestjs/common";
 
@@ -61,5 +64,53 @@ return user;`;
     const res = writeSurgicalBody(cls, "nope", "return 1;", "2026-06-16T00:00:00Z");
     expect(res.ok).toBe(false);
     expect(res.error).toContain("nope");
+  });
+});
+
+describe("readDeclaredSurface (grounding)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "surface-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "sub"), { recursive: true });
+
+  writeFileSync(
+    join(dir, "sub", "user.repository.ts"),
+    `export class UserRepository {
+  async save(u: { id: string }): Promise<{ id: string }> { return u; }
+  async findById(id: string): Promise<{ id: string } | null> { return null; }
+}`,
+  );
+  writeFileSync(
+    join(dir, "sub", "user-role.enum.ts"),
+    `export enum UserRole { ADMIN = "admin", USER = "user" }`,
+  );
+  writeFileSync(
+    join(dir, "sub", "not-found.exception.ts"),
+    `export class NotFoundException extends Error { constructor() { super("nf"); } }`,
+  );
+  writeFileSync(
+    join(dir, "sub", "user.service.ts"),
+    `import { UserRepository } from "./user.repository";
+import { UserRole } from "./user-role.enum";
+import { NotFoundException } from "./not-found.exception";
+export class UserService {
+  constructor(private readonly userRepository: UserRepository) {}
+  async x(): Promise<void> { throw new Error("NOT_IMPLEMENTED: x"); }
+}`,
+  );
+
+  const surface = readDeclaredSurface(join(dir, "sub", "user.service.ts"));
+
+  it("import edilen sınıfın gerçek metodlarını listeler (create yok, save var)", () => {
+    expect(surface).toContain("class UserRepository");
+    expect(surface).toContain("save(");
+    expect(surface).toContain("findById(");
+    expect(surface).not.toContain("create(");
+  });
+  it("enum üyelerini DEĞERLERİYLE verir", () => {
+    expect(surface).toContain("enum UserRole");
+    expect(surface).toContain('ADMIN = "admin"');
+  });
+  it("exception'ın sıfır-arg constructor'ını gösterir", () => {
+    expect(surface).toMatch(/class NotFoundException \{ constructor\(\) \}/);
   });
 });

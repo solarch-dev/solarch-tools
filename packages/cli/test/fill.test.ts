@@ -43,10 +43,16 @@ describe("buildFillPrompt", () => {
     expect(user.content).toContain("userRepository");
     expect(user.content).toContain("async getById");
   });
-  it("önceki ihlalleri geri besler", () => {
+  it("önceki sorunları (kontrat/tsc) geri besler", () => {
     const user = buildFillPrompt(region, ctx, ['throws undeclared "ConflictException"'])[1]!;
-    expect(user.content).toContain("VIOLATED");
+    expect(user.content).toContain("had these problems");
     expect(user.content).toContain("ConflictException");
+  });
+
+  it("API yüzeyini prompt'a gömer (grounding)", () => {
+    const user = buildFillPrompt(region, { ...ctx, apiSurface: "class UserRepository { constructor() }\n  methods: save(u: User): Promise<User>" })[1]!;
+    expect(user.content).toContain("API surface");
+    expect(user.content).toContain("save(u: User)");
   });
 });
 

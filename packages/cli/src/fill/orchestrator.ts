@@ -8,7 +8,7 @@
  *  high-signal verification the user asked for). */
 
 import { join } from "node:path";
-import { readFillContext, tryFillSurgicalBody, type SurgicalMember } from "@solarch/ast-core";
+import { fixMissingImportsInFiles, readDeclaredSurface, readFillContext, tryFillSurgicalBody, type SurgicalMember } from "@solarch/ast-core";
 import { runScan } from "../commands/scan.js";
 import { buildFillPrompt } from "./prompt.js";
 import { stripCodeFences, type CompleteFn } from "./llm.js";
@@ -67,17 +67,19 @@ export function selectSkeletons(rootDir: string, region?: string): RegionTarget[
 }
 
 /** Tek bölgeyi doldur — izole. ast-core her denemede dosyayı taze yükler ve yalnız
- *  sözleşmeye uyan dolumu diske yazar; başarısız denemeler stub'ı bozmaz. */
-export async function fillRegion(target: RegionTarget, opts: FillOptions): Promise<FillRegionResult> {
+ *  sözleşmeye uyan dolumu diske yazar; başarısız denemeler stub'ı bozmaz.
+ *  `feedback` (önceki tur tsc/kontrat hataları) ilk denemeye tohumlanır (onarım). */
+export async function fillRegion(target: RegionTarget, opts: FillOptions, feedback?: string[]): Promise<FillRegionResult> {
   const maxAttempts = opts.maxAttempts ?? 3;
   const base = { nodeId: target.nodeId, member: target.member.member, file: target.file };
   const filePath = join(opts.rootDir, target.file);
 
   const parts = readFillContext(filePath, target.className, target.member.member);
   if (!parts) return { ...base, status: "error", attempts: 0, error: `region not found in ${target.file}` };
-  const ctx = { className: target.className, ...parts };
+  // Grounding: import edilen tiplerin gerçek API yüzeyi (halüsinasyonu keser).
+  const ctx = { className: target.className, ...parts, apiSurface: readDeclaredSurface(filePath) };
 
-  let violations: string[] | undefined;
+  let violations: string[] | undefined = feedback;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let body: string;
     try {
@@ -94,27 +96,73 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions): Promi
   return { ...base, status: "violation", attempts: maxAttempts, violations };
 }
 
-/** Tüm seçili iskeletleri doldur + tsc/test geçitleri. */
+/** tsc --noEmit çıktısını dosya yoluna göre hatalara böl (göreli yola normalize). */
+function tscErrorsByFile(rootDir: string, output: string): Map<string, string[]> {
+  const byFile = new Map<string, string[]>();
+  for (const line of output.split("\n")) {
+    const m = /^(.+?\.ts)\(\d+,\d+\):\s*(error.*)$/.exec(line.trim());
+    if (!m) continue;
+    const rel = m[1]!.replace(`${rootDir}/`, "").replace(/^\.\//, "");
+    (byFile.get(rel) ?? byFile.set(rel, []).get(rel)!).push(m[2]!.trim());
+  }
+  return byFile;
+}
+
+/** Tüm seçili iskeletleri doldur → tsc-repair turları → test geçidi. */
 export async function fillProject(opts: FillOptions): Promise<FillReport> {
   const targets = selectSkeletons(opts.rootDir, opts.region);
-  const regions: FillRegionResult[] = [];
+  const byKey = new Map<string, RegionTarget>();
+  for (const t of targets) byKey.set(`${t.file}#${t.member.member}`, t);
+
+  const results = new Map<string, FillRegionResult>();
   for (const t of targets) {
     const r = await fillRegion(t, opts);
-    regions.push(r);
+    results.set(`${t.file}#${t.member.member}`, r);
     opts.onProgress?.(r);
   }
 
+  // Dolan gövdeler yerel tip kullanıp import ekleyemez → eksik import'ları topluca ekle.
+  const filledFiles = [...new Set([...results.values()].filter((r) => r.status === "filled").map((r) => r.file))];
+  if (filledFiles.length > 0) {
+    try {
+      fixMissingImportsInFiles(opts.rootDir, filledFiles);
+    } catch {
+      /* en iyi çaba */
+    }
+  }
+
+  // Katman 3 — tsc onarım döngüsü: tsc patlarsa, hatalı dosyadaki dolu bölgeleri
+  // o dosyanın derleyici hatalarını geri besleyerek yeniden doldur. ≤2 tur.
+  let typecheck: VerifyResult | undefined;
+  const maxRepairRounds = opts.skipVerify ? 0 : 2;
+  for (let round = 1; round <= maxRepairRounds; round++) {
+    typecheck = runTypecheck(opts.rootDir);
+    if (typecheck.ok) break;
+    const errsByFile = tscErrorsByFile(opts.rootDir, typecheck.output);
+    let repaired = 0;
+    for (const [key, t] of byKey) {
+      const r = results.get(key);
+      if (r?.status !== "filled") continue; // yalnız başarılı dolumları onar
+      const fileErrs = errsByFile.get(t.file);
+      if (!fileErrs || fileErrs.length === 0) continue;
+      const rr = await fillRegion(t, opts, [`tsc errors in ${t.file} — fix your method so the file compiles:`, ...fileErrs.slice(0, 12)]);
+      results.set(key, rr);
+      repaired++;
+      opts.onProgress?.({ ...rr, member: `${rr.member} (repair r${round})` });
+    }
+    if (repaired === 0) break; // hatalı dosyalarda dolu bölge yok → AI düzeltemez
+  }
+
+  const regions = [...results.values()];
   const report: FillReport = {
     regions,
     filled: regions.filter((r) => r.status === "filled").length,
     violations: regions.filter((r) => r.status === "violation").length,
     errors: regions.filter((r) => r.status === "error").length,
   };
-
-  // Geçitler — yalnız en az bir bölge dolduysa ve atlanmadıysa.
-  if (!opts.skipVerify && report.filled > 0) {
-    report.typecheck = runTypecheck(opts.rootDir);
-    report.tests = runTests(join(opts.rootDir));
+  if (!opts.skipVerify) {
+    report.typecheck = typecheck ?? runTypecheck(opts.rootDir);
+    if (report.typecheck.ok || report.filled > 0) report.tests = runTests(opts.rootDir);
   }
   return report;
 }
