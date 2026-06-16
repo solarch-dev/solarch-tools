@@ -14,8 +14,11 @@ import {
   type NodeKind,
 } from "@solarch/ast-core";
 import {
+  createCompleter,
   diffGraphs,
   evaluateEdge,
+  fillProject,
+  llmConfigFromEnv,
   readMatchCache,
   runScan,
   writeMatchCache,
@@ -23,6 +26,7 @@ import {
   type ApplyResult,
   type CloudGraph,
   type DriftFinding,
+  type FillReport,
   type RuleCatalog,
 } from "@solarch/cli/lib";
 import type { ToolContext } from "./context.js";
@@ -302,6 +306,36 @@ export function getUnimplemented(rootDir: string): UnimplementedReport {
             `update the architecture first. Then: ${fillRules}`
           : fillRules,
   };
+}
+
+/* ── cerrahi AI: otonom bölge doldurma ───────────────────────────── */
+
+export interface FillToolInput {
+  /** Tek bölge: "<nodeId>#<member>" veya "<member>". `all` ile birlikte verme. */
+  region?: string;
+  /** Tüm iskeletleri doldur. */
+  all?: boolean;
+  /** Bölge başına kontrat-retry tavanı (varsayılan 3). */
+  attempts?: number;
+}
+
+/** Bir (veya tüm) iskelet bölgeyi LLM ile otonom doldur — kontrat denetimi +
+ *  retry + tsc/test geçitleri. Sözleşmeye uyan dolum kaydedilir; başarısız olan
+ *  stub'ı korur. DEEPSEEK_API_KEY (veya SOLARCH_FILL_API_KEY) gerekir. */
+export async function fillSurgicalRegion(rootDir: string, input: FillToolInput): Promise<FillReport> {
+  if (!input.region && !input.all) {
+    throw new Error("Specify `region` (a nodeId#member from get_unimplemented) or `all: true`.");
+  }
+  const config = llmConfigFromEnv();
+  if (!config.apiKey) {
+    throw new Error("No LLM API key — set DEEPSEEK_API_KEY (or SOLARCH_FILL_API_KEY) for the MCP server's environment.");
+  }
+  return fillProject({
+    rootDir,
+    complete: createCompleter(config),
+    region: input.all ? undefined : input.region,
+    maxAttempts: input.attempts,
+  });
 }
 
 /* ── yardımcı: CloudGraph özeti (sunucu loglarında kullanışlı) ────── */

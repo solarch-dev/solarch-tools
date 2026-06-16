@@ -69,3 +69,15 @@ export {
   type MarkerLoss,
   type NodeImplementation,
 } from "./commands/status.js";
+
+export {
+  fillProject,
+  fillRegion,
+  selectSkeletons,
+  type FillOptions,
+  type FillRegionResult,
+  type FillReport,
+  type RegionTarget,
+} from "./fill/orchestrator.js";
+
+export { createCompleter, llmConfigFromEnv, type CompleteFn, type LlmConfig } from "./fill/llm.js";

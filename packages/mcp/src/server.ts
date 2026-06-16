@@ -16,6 +16,7 @@ import { ContextError, resolveContext, type ToolContext } from "./context.js";
 import {
   checkDrift,
   createNodeSafely,
+  fillSurgicalRegion,
   getArchitecture,
   getRules,
   getUnimplemented,
@@ -115,6 +116,37 @@ export function buildServer(rootDir: string): McpServer {
     () => {
       try {
         return ok({ ...getUnimplemented(rootDir) });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  server.registerTool(
+    "fill_surgical_region",
+    {
+      title: "Fill a NOT_IMPLEMENTED region with AI (contract-checked)",
+      description:
+        "Autonomously implements one (or all) NOT_IMPLEMENTED skeleton method bodies. For each region it prompts an " +
+        "LLM with the region's surgical contract (signature, allowed throws, allowed deps), writes the body, " +
+        "re-audits the contract and retries on violation, then runs the project's typecheck + tests. Only " +
+        "contract-passing fills are saved; failures keep their stub. Returns a per-region report. Prefer this over " +
+        "editing bodies yourself when you want a verified, contract-bounded fill. Requires DEEPSEEK_API_KEY (or " +
+        "SOLARCH_FILL_API_KEY) in the server environment.",
+      inputSchema: {
+        region: z
+          .string()
+          .optional()
+          .describe('One region: "<nodeId>#<member>" or "<member>" (from get_unimplemented). Omit when all=true.'),
+        all: z.boolean().optional().describe("Fill every skeleton region in the repo"),
+        attempts: z.number().int().min(1).max(5).optional().describe("Contract-retry attempts per region (default 3)"),
+      },
+      annotations: { destructiveHint: false, idempotentHint: false },
+    },
+    // Lokal (LLM env anahtarıyla) — Solarch cloud login'i gerekmez.
+    async (input) => {
+      try {
+        return ok({ ...(await fillSurgicalRegion(rootDir, input)) });
       } catch (e) {
         return fail(e);
       }

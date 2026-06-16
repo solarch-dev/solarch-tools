@@ -21,12 +21,13 @@ describe("solarch-mcp server", () => {
     return client;
   }
 
-  it("altı aracı doğru adlarla ilan eder", async () => {
+  it("yedi aracı doğru adlarla ilan eder", async () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "check_drift",
       "create_node_safely",
+      "fill_surgical_region",
       "get_architecture",
       "get_rules",
       "get_unimplemented",
