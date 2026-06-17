@@ -87,7 +87,7 @@ export async function fillCommand(opts: FillCommandOptions): Promise<void> {
     skipVerify: opts.skipVerify,
     withTests: opts.withTests,
     onProgress: opts.json
-      ? (r) => emit({ event: "region", status: r.status, member: r.member, file: r.file, attempts: r.attempts, violations: r.violations, error: r.error })
+      ? (r) => emit({ event: "region", status: r.status, nodeId: r.nodeId, member: r.member, file: r.file, attempts: r.attempts, violations: r.violations, error: r.error, body: r.body })
       : printRegion,
     onPhase: opts.json
       ? (p) => emit({ event: "phase", ...p })

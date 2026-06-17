@@ -48,6 +48,9 @@ export interface FillRegionResult {
   attempts: number;
   violations?: string[];
   error?: string;
+  /** Diske yazılan (doğrulanmış) gövde — status="filled" iken dolu. Sunucu bunu
+   *  bölge-bazında kalıcı saklar (re-open'da dolu görünsün, re-fill kaldığı yerden). */
+  body?: string;
 }
 
 export interface FillReport {
@@ -149,15 +152,18 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
 
   let lastViolations: string[] | undefined;
   let toolError: string | undefined;
+  let filledBody: string | undefined; // diske yazılan doğrulanmış gövde (kalıcı sakla)
   const resolve: ToolResolver = async (call) => {
     const code = typeof call.args?.code === "string" ? call.args.code.trim() : "";
     if (!code) return { content: JSON.stringify({ ok: false, violations: ["empty code — pass the method body statements in `code`"] }) };
-    const res = tryFillSurgicalBody(filePath, target.className, target.member.member, stripCodeFences(code), new Date().toISOString());
+    const body = stripCodeFences(code);
+    const res = tryFillSurgicalBody(filePath, target.className, target.member.member, body, new Date().toISOString());
     if (!res.ok) {
       toolError = res.error;
       return { content: JSON.stringify({ ok: false, violations: [res.error] }) };
     }
     if ((res.violations?.length ?? 0) === 0) {
+      filledBody = body.trim();
       return { content: JSON.stringify({ ok: true }), done: true, result: true };
     }
     lastViolations = res.violations;
@@ -180,7 +186,7 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
     return { ...base, status: "error", attempts: 0, error: (e as Error).message };
   }
 
-  if (agent.result === true) return { ...base, status: "filled", attempts: agent.rounds };
+  if (agent.result === true) return { ...base, status: "filled", attempts: agent.rounds, body: filledBody };
   if (toolError && !lastViolations) return { ...base, status: "error", attempts: agent.rounds, error: toolError };
   // Yeşile ulaşamadı → ast-core kaydetmedi (disk hâlâ iskelet stub).
   return { ...base, status: "violation", attempts: agent.rounds, violations: lastViolations };
@@ -263,7 +269,8 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
     await runFillJobs(repairJobs, opts, (key, rr) => {
       results.set(key, rr);
       opts.onPhase?.({ kind: "repair", round, file: rr.file, member: rr.member });
-      opts.onProgress?.({ ...rr, member: `${rr.member} (repair r${round})` });
+      // Region event TEMİZ kalsın (nodeId#member + body keylenir); onarım bilgisi phase'de.
+      opts.onProgress?.(rr);
     });
     lastRepaired = repairJobs.length;
   }
