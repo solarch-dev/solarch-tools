@@ -16,7 +16,7 @@ import { stripCodeFences } from "./llm.js";
 import { runToolAgent, type AgentTool, type ChatTransport, type ToolResolver } from "./agent.js";
 import { writeSpecAndRun } from "./verify.js";
 
-const SPEC_SYSTEM = [
+export const SPEC_SYSTEM = [
   "You write a JEST unit test (.spec.ts) for the service shown, then VERIFY it with the run_tests tool.",
   "Call run_tests with the COMPLETE .spec.ts file content; it runs jest and returns {ok:true} or the jest",
   "failure output. The ONLY way to finish is a run_tests that returns ok — never answer in prose. Read the",
@@ -25,6 +25,13 @@ const SPEC_SYSTEM = [
   "jest.fn()); construct the service directly with `new ServiceName(mockA as any, mockB as any)`; write one",
   "happy-path test per public method (assert the returned value's shape AND that the right dependency methods",
   "were called), plus one test per exception in that method's `// throws:` contract.",
+  "ROUND-TRIP / INVARIANT: when two methods of this service form a producer→consumer pair over the same artifact",
+  "(one RETURNS a token / id / code / hash and another ACCEPTS and validates it), add a round-trip test — call the",
+  "producer, feed its REAL output into the consumer, and assert the consumer SUCCEEDS (returns the expected value).",
+  "Do NOT mock the consumer and do NOT wrap it in try/catch to swallow a failure: a genuinely-broken round-trip",
+  "must stay RED — it means the implementation is wrong (e.g. a login that returns a constant string the validator",
+  "rejects). Assert on the CONCRETE value / invariant, not just the shape — a shape-only check passes a fake or",
+  "hardcoded placeholder value.",
   "describe / it / expect / jest / beforeEach are GLOBAL — never import them (no node:test, no @jest/globals).",
   "The API surface block is the ground truth for method names, enum members and exception classes; jest will",
   "reject anything invented. When a test targets a specific error, arrange the mocks and input so execution",

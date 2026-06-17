@@ -10,7 +10,7 @@ import { llmConfigFromEnv, stripCodeFences } from "../src/fill/llm.js";
 import { buildFillUser, FILL_SYSTEM } from "../src/fill/prompt.js";
 import { runToolAgent, type AgentMessage, type ChatTransport, type ToolResolver } from "../src/fill/agent.js";
 import { fillProject, fillRegion, selectSkeletons } from "../src/fill/orchestrator.js";
-import { generateSpecForService } from "../src/fill/spec.js";
+import { generateSpecForService, SPEC_SYSTEM } from "../src/fill/spec.js";
 import type { SurgicalMember } from "@solarch/ast-core";
 
 const DUMMY_LLM = { baseUrl: "https://x/v1", model: "test", apiKey: "k" };
@@ -198,6 +198,17 @@ describe("fillProject — paralel (per-file), scripted transport", () => {
     expect(b).not.toContain("NOT_IMPLEMENTED");
     expect(a.match(/@solarch:filled/g)?.length).toBe(2);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("SPEC_SYSTEM (davranış-testi kuralları)", () => {
+  it("round-trip / üretici→tüketici invariant testini ister (sahte JWT'yi yakalar)", () => {
+    expect(SPEC_SYSTEM.toLowerCase()).toContain("round-trip");
+    // Tüketiciyi mock'lama / hatayı yutma yasağı (round-trip gerçek olmalı).
+    expect(SPEC_SYSTEM.toLowerCase()).toMatch(/do not mock the consumer|swallow/);
+  });
+  it("şekil değil DEĞER assertion'ı ister (hardcoded/placeholder değeri yakalar)", () => {
+    expect(SPEC_SYSTEM.toLowerCase()).toMatch(/concrete value|not just the shape|shape-only/);
   });
 });
 
