@@ -59,6 +59,42 @@ return user;`;
     expect(res.violations?.some((v) => v.includes("ConflictException"))).toBe(true);
   });
 
+  it("type-dodging cast (as any) → ihlal (gerçek alanı gizler; audit: plaintext-password)", () => {
+    // Gerçek bug: AI `(user as any).password !== ...` yazdı — `as any` hem kapalı-dünya
+    // üye denetimini (any atlanır) hem tsc'yi atlattı; User'da `password` yok (passwordHash
+    // var). Cast-yasağı bunu yakalar -> AI gerçek alanı kullanmaya zorlanır.
+    const cls = classOf(SKELETON);
+    const body = `const user = await this.userRepository.findById(id);
+if ((user as any).password !== id) throw new NotFoundException();
+return user;`;
+    const res = writeSurgicalBody(cls, "getById", body, "2026-06-16T00:00:00Z");
+    expect(res.ok).toBe(true);
+    expect(res.violations?.some((v) => /as any|type-dodging|cast/i.test(v))).toBe(true);
+  });
+
+  it("as unknown da yasaktır; cast'siz gövde temiz (yanlış-pozitif yok)", () => {
+    const cls = classOf(SKELETON);
+    const dirty = writeSurgicalBody(
+      cls,
+      "getById",
+      `const user = await this.userRepository.findById(id);
+if (!(user as unknown as { ok: boolean }).ok) throw new NotFoundException();
+return user;`,
+      "2026-06-16T00:00:00Z",
+    );
+    expect(dirty.violations?.some((v) => /as unknown|type-dodging|cast/i.test(v))).toBe(true);
+
+    const clean = writeSurgicalBody(
+      classOf(SKELETON),
+      "getById",
+      `const user = await this.userRepository.findById(id);
+if (!user) throw new NotFoundException();
+return user;`,
+      "2026-06-16T00:00:00Z",
+    );
+    expect((clean.violations ?? []).some((v) => /cast/i.test(v))).toBe(false);
+  });
+
   it("var olmayan region için hata döner", () => {
     const cls = classOf(SKELETON);
     const res = writeSurgicalBody(cls, "nope", "return 1;", "2026-06-16T00:00:00Z");

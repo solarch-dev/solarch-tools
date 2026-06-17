@@ -195,6 +195,32 @@ function checkMemberAccess(method: MethodDeclaration): string[] {
   return violations;
 }
 
+/** TİP-GİZLEYEN CAST yasağı (forbidden-moves geçidi). `x as any` / `x as unknown`
+ *  hem kapalı-dünya üye denetimini (any/unknown ATLANIR — checkMemberAccess satır
+ *  ~174) hem tsc'yi kör eder → AI var olmayan bir alana erişip (audit: `(user as
+ *  any).password`; User'da `password` yok, `passwordHash` var) bug'ı GİZLER. Bu
+ *  cast'leri ihlal say → AI gerçek tipleri (API yüzeyinden) kullanmaya zorlanır.
+ *  Çift-cast `as unknown as T`'nin `as unknown` kısmı da yakalanır (kaçış kapısı). */
+function checkForbiddenCasts(method: MethodDeclaration): string[] {
+  const body = method.getBody();
+  if (!body) return [];
+  const violations: string[] = [];
+  const seen = new Set<string>();
+  for (const as of body.getDescendantsOfKind(SyntaxKind.AsExpression)) {
+    const typeText = (as.getTypeNode()?.getText() ?? "").trim();
+    if (!/^(any|unknown)\b/.test(typeText)) continue;
+    const snippet = as.getText().replace(/\s+/g, " ").slice(0, 50);
+    if (seen.has(snippet)) continue;
+    seen.add(snippet);
+    violations.push(
+      `type-dodging cast "as ${typeText}" is not allowed — it hides real type errors ` +
+        `(e.g. reading a field the type does not have). Use the real types from the API surface; if a ` +
+        `value genuinely lacks the member you need, that is a contract problem to surface, not cast away.`,
+    );
+  }
+  return violations;
+}
+
 /* ── işaret okuma ────────────────────────────────────────────────── */
 
 /** Tek metodun gövdesinden işaret çıkar — işaret yoksa null. */
@@ -349,7 +375,11 @@ export function writeSurgicalBody(
   const re = readMethodMarker(method, injectedDeps(cls));
   // Sözleşme (deps/throws) + KAPALI-DÜNYA üye denetimi: gövde, ürettiğimiz tiplerin
   // var olmayan üyelerine erişmemeli (halüsinasyon geçidi — gerçek üye listesi döner).
-  const violations = [...(re?.violations ?? []), ...checkMemberAccess(method)];
+  const violations = [
+    ...(re?.violations ?? []),
+    ...checkMemberAccess(method),
+    ...checkForbiddenCasts(method),
+  ];
   return { ok: true, member, violations: violations.length > 0 ? violations : undefined };
 }
 
