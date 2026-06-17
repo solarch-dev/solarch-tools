@@ -183,3 +183,68 @@ export class UserService {
     expect(surface).toContain("firstValueFrom");
   });
 });
+
+describe("writeSurgicalBody — kapalı-dünya üye geçidi (halüsinasyon engeli)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "member-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "src"), { recursive: true });
+  writeFileSync(
+    join(dir, "src", "user.entity.ts"),
+    `export class User { id!: string; email!: string; fullName!: string; role!: string; }`,
+  );
+  writeFileSync(
+    join(dir, "src", "complaint.entity.ts"),
+    `import { Column, Entity, ManyToOne } from "typeorm";
+import { User } from "./user.entity";
+@Entity()
+export class Complaint {
+  @Column() id!: string;
+  @Column() title!: string;
+  @ManyToOne(() => User) customer!: User;
+}`,
+  );
+  writeFileSync(
+    join(dir, "src", "complaint.service.ts"),
+    `import { Complaint } from "./complaint.entity";
+export class ComplaintService {
+  format(c: Complaint): string {
+    // @solarch:surgical id=x1#format
+    // Build a label.
+    throw new Error("NOT_IMPLEMENTED: ComplaintService.format");
+  }
+}`,
+  );
+
+  function svcClass() {
+    // Gerçek dosya yolu → import'lar diskten LAZY çözülür (node_modules gerekmez).
+    const project = new Project({ skipAddingFilesFromTsConfig: true });
+    const sf = project.addSourceFileAtPath(join(dir, "src", "complaint.service.ts"));
+    return sf.getClassOrThrow("ComplaintService");
+  }
+
+  it("var olmayan ilişki-üyesi (c.customer.username) → ihlal + GERÇEK üye listesi", () => {
+    const res = writeSurgicalBody(svcClass(), "format", "return c.customer.username;", "2026-06-17T00:00:00Z");
+    expect(res.ok).toBe(true);
+    expect(res.violations?.some((v) => v.includes('"username"') && v.includes("fullName"))).toBe(true);
+  });
+
+  it("gerçek üye (c.customer.fullName) → üye ihlali YOK", () => {
+    const res = writeSurgicalBody(svcClass(), "format", "return c.customer.fullName;", "2026-06-17T00:00:00Z");
+    expect(res.ok).toBe(true);
+    expect((res.violations ?? []).some((v) => /does not exist/.test(v))).toBe(false);
+  });
+
+  it("YANLIŞ-POZİTİF YOK: built-in (string.toUpperCase) + yerel gerçek üye", () => {
+    // c.title yerel Complaint üyesi (var); .toUpperCase() string built-in (3.parti tip → atlanır).
+    const res = writeSurgicalBody(svcClass(), "format", "return c.title.toUpperCase();", "2026-06-17T00:00:00Z");
+    expect((res.violations ?? []).some((v) => /does not exist/.test(v))).toBe(false);
+  });
+
+  it("grounding: ilişki hedefinin GERÇEK üyelerini listeler (generic .name değil)", () => {
+    const surface = readDeclaredSurface(join(dir, "src", "complaint.service.ts"));
+    expect(surface).toContain("customer: User (relation @");
+    expect(surface).toContain("access ONLY these:");
+    expect(surface).toContain("fullName"); // hedef tipin gerçek üyesi listelendi
+    expect(surface).not.toContain("e.g. customer.name"); // yanıltıcı generic ipucu kalktı
+  });
+});

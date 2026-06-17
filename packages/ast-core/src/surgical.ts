@@ -62,6 +62,14 @@ const NOT_IMPLEMENTED_RE = /throw\s+new\s+Error\(\s*["'`]NOT_IMPLEMENTED:/;
 /** Kanonik karşılaştırma — "accountsRepository" ↔ "AccountsRepository" eşleşir. */
 const canon = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
+/** Object/Function üzerinde HER tipte bulunan üyeler — üye-denetiminde yanlış
+ *  pozitif vermesinler (ör. `ClassName.name`, `x.toString`). */
+const BUILTIN_MEMBERS = new Set([
+  "name", "constructor", "prototype", "length", "call", "apply", "bind",
+  "hasOwnProperty", "toString", "valueOf", "isPrototypeOf",
+  "propertyIsEnumerable", "toLocaleString", "then", "catch", "finally",
+]);
+
 /* ── sözleşme denetimi ───────────────────────────────────────────── */
 
 /** Sınıfın constructor'ından enjekte edilen parametre-property adları. */
@@ -136,6 +144,54 @@ function checkContract(
     }
   }
 
+  return violations;
+}
+
+/** KAPALI-DÜNYA üye denetimi (halüsinasyon geçidi). Gövdedeki her `recv.member`
+ *  erişimi için: `recv` BİZİM ürettiğimiz YEREL bir tipe (kaynağı `src/` altında —
+ *  entity/DTO/servis) çözülüyorsa ve `member` o tipte YOKSA → ihlal + GERÇEK üye
+ *  listesi geri verilir. Böylece AI `customer.username` uyduramaz; tsc'ye gerek
+ *  kalmadan, taslak yolunda bile (import'lar diskten lazy çözülür, node_modules
+ *  gerekmez) yakalanır.
+ *
+ *  SAĞLAM (yanlış-pozitif YOK): tip any/unknown/union/type-param/statik-yan
+ *  (`typeof X`) ya da kaynağı dışsal (node_modules — 3. parti) ise ATLA — onları
+ *  tip denetimi (tsc) yakalar. Yalnız tam-çözülen, sahip olduğumuz tipler denetlenir. */
+function checkMemberAccess(method: MethodDeclaration): string[] {
+  const body = method.getBody();
+  if (!body) return [];
+  const violations: string[] = [];
+  const reported = new Set<string>();
+  for (const access of body.getDescendantsOfKind(SyntaxKind.PropertyAccessExpression)) {
+    const name = access.getName();
+    if (BUILTIN_MEMBERS.has(name)) continue;
+    let t;
+    try {
+      t = access.getExpression().getType().getNonNullableType();
+    } catch {
+      continue; // tip çözülemedi → güvenli atla
+    }
+    if (t.isAny() || t.isUnknown() || t.isUnion() || t.isIntersection() || t.isTypeParameter()) continue;
+    if (t.getText().startsWith("typeof ")) continue; // statik/constructor yan (Function.name vb.)
+    const sym = t.getSymbol() ?? t.getAliasSymbol();
+    const decls = sym?.getDeclarations() ?? [];
+    // YALNIZ kendi ürettiğimiz tipler (en az bir bildirimi src/ altında). 3. parti
+    // (node_modules) tiplerini denetleme — onları tsc kapsar.
+    const isOwn = decls.length > 0 && decls.some((d) => /[/\\]src[/\\]/.test(d.getSourceFile().getFilePath()));
+    if (!isOwn) continue;
+    const apparent = t.getApparentType();
+    if (apparent.getProperty(name)) continue; // üye gerçek → OK
+    const key = `${t.getText()}.${name}`;
+    if (reported.has(key)) continue;
+    reported.add(key);
+    const allowed = apparent
+      .getProperties()
+      .map((p) => p.getName())
+      .filter((m) => !m.startsWith("__") && !BUILTIN_MEMBERS.has(m));
+    violations.push(
+      `property "${name}" does not exist on type "${cleanType(t.getText())}" — use ONLY its real members: ${allowed.join(", ")} (do not invent member names)`,
+    );
+  }
   return violations;
 }
 
@@ -291,7 +347,10 @@ export function writeSurgicalBody(
   method.setBodyText([...markerLines, filledSig, "", bodyCode.trim()].join("\n"));
 
   const re = readMethodMarker(method, injectedDeps(cls));
-  return { ok: true, member, violations: re?.violations };
+  // Sözleşme (deps/throws) + KAPALI-DÜNYA üye denetimi: gövde, ürettiğimiz tiplerin
+  // var olmayan üyelerine erişmemeli (halüsinasyon geçidi — gerçek üye listesi döner).
+  const violations = [...(re?.violations ?? []), ...checkMemberAccess(method)];
+  return { ok: true, member, violations: violations.length > 0 ? violations : undefined };
 }
 
 /** Dolan gövdeler yerel tipler (örn. bir entity) kullanıp dosya başına import
@@ -425,9 +484,23 @@ function describeClass(cls: ClassDeclaration): string {
       const decos = p.getDecorators().map((d) => d.getName());
       const rel = decos.find((d) => RELATION_DECOS.has(d));
       if (rel) {
-        // İLİŞKİ: alt-alanlarına relation ÜZERİNDEN erişilir (customer.name) — düz
-        // `customerName` UYDURMA. AI bu etiketi okuyup doğru yolu kullanır.
-        return `${pname}: ${type} (relation @${rel} — read its fields via ${pname}.<field> e.g. ${pname}.name; do NOT invent a flat ${pname}Name/${pname}Id)`;
+        // İLİŞKİ: alt-alanlarına relation ÜZERİNDEN erişilir; düz `customerName` UYDURMA.
+        // Hedef tipin GERÇEK üyelerini çöz ve LİSTELE (generic `.name` ipucu YANLIŞ
+        // olabilir — ör. User'da `name` yok, `fullName` var). AI tam isimleri görür.
+        let allowed = "";
+        try {
+          let tt = p.getType().getNonNullableType();
+          if (tt.isArray()) tt = tt.getArrayElementType() ?? tt;
+          const members = tt
+            .getApparentType()
+            .getProperties()
+            .map((m) => m.getName())
+            .filter((m) => !m.startsWith("__") && !BUILTIN_MEMBERS.has(m));
+          if (members.length) allowed = ` — access ONLY these: ${members.join(", ")}`;
+        } catch {
+          /* çözülemedi → generic etiket */
+        }
+        return `${pname}: ${type} (relation @${rel} — read via ${pname}.<field>${allowed}; do NOT invent a flat ${pname}Name/${pname}Id)`;
       }
       if (/Id$/.test(pname) && /\bstring\b/.test(type)) return `${pname}: ${type} (fk scalar)`;
       return `${pname}: ${type}`;
