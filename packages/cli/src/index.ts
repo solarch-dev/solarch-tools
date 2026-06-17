@@ -144,11 +144,12 @@ program
   .option("--all", "Fill every skeleton region in the repo")
   .option("--region <ref>", 'Fill one region: "<nodeId>#<member>" or "<member>"')
   .option("--attempts <n>", "Contract-retry attempts per region (default 3)", (v) => Number.parseInt(v, 10))
+  .option("--parallel <n>", "Fill up to N files concurrently (regions within a file stay sequential; default 1)", (v) => Number.parseInt(v, 10))
   .option("--skip-verify", "Skip the tsc + test gates (contract check only)")
   .option("--with-tests", "Generate real behavioural specs for filled services (verifies, not assumes)")
   .option("--json", "Machine-readable NDJSON progress (one line per region + a final report)")
-  .action(async (opts: { all?: boolean; region?: string; attempts?: number; skipVerify?: boolean; withTests?: boolean; json?: boolean }) => {
-    await fillCommand({ rootDir: rootDir(), all: opts.all, region: opts.region, attempts: opts.attempts, skipVerify: opts.skipVerify, withTests: opts.withTests, json: opts.json });
+  .action(async (opts: { all?: boolean; region?: string; attempts?: number; parallel?: number; skipVerify?: boolean; withTests?: boolean; json?: boolean }) => {
+    await fillCommand({ rootDir: rootDir(), all: opts.all, region: opts.region, attempts: opts.attempts, concurrency: opts.parallel, skipVerify: opts.skipVerify, withTests: opts.withTests, json: opts.json });
   });
 
 program

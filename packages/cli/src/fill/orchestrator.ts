@@ -61,6 +61,15 @@ export interface FillReport {
   tests?: VerifyResult;
 }
 
+/** Doğrulama/onarım fazı olayları — bölge-dışı (proje geneli) ilerleme. UI/SSE
+ *  "tsc koştu → N hata → şu bölgeyi onarıyorum → testler" akışını canlı göstersin
+ *  diye yayınlanır (kullanıcı "yapılan işlemde output ne geliyor incelensin" dedi). */
+export type FillPhase =
+  | { kind: "imports"; files: number }
+  | { kind: "verify"; round: number; ok: boolean; errorCount: number }
+  | { kind: "repair"; round: number; file: string; member: string }
+  | { kind: "tests"; ok: boolean; skipped: boolean };
+
 export interface FillOptions {
   rootDir: string;
   /** Tool-calling ajanının konuştuğu LLM (OpenAI-uyumlu endpoint). */
@@ -74,8 +83,40 @@ export interface FillOptions {
   skipVerify?: boolean;
   /** Layer 4 — dolu servisler için gerçek davranış spec'i üret (stub'ı ezer). */
   withTests?: boolean;
+  /** Eşzamanlı doldurulacak DOSYA sayısı (varsayılan 1 = sıralı). Aynı dosyanın
+   *  bölgeleri her zaman tek worker'da sıralı kalır (ts-morph saveSync race'i yok). */
+  concurrency?: number;
   /** Bölge tamamlandığında çağrılır (ilerleme). */
   onProgress?: (r: FillRegionResult) => void;
+  /** Doğrulama/onarım fazı ilerlemesi (proje geneli) — opsiyonel. */
+  onPhase?: (p: FillPhase) => void;
+}
+
+/** Bölge dolum işlerini DOSYA-bazında paralel koştur: gruplar paralel (concurrency
+ *  cap), grup içi sıralı. Aynı dosya tek worker'da kalır → iki paralel saveSync ile
+ *  birbirini ezme yok. concurrency<=1 → tamamen sıralı (eski davranış). */
+async function runFillJobs(
+  jobs: { target: RegionTarget; feedback?: string[] }[],
+  opts: FillOptions,
+  onResult: (key: string, r: FillRegionResult) => void,
+): Promise<void> {
+  const byFile = new Map<string, { target: RegionTarget; feedback?: string[] }[]>();
+  for (const j of jobs) (byFile.get(j.target.file) ?? byFile.set(j.target.file, []).get(j.target.file)!).push(j);
+  const groups = [...byFile.values()];
+  const concurrency = Math.max(1, Math.min(opts.concurrency ?? 1, groups.length || 1));
+
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= groups.length) return;
+      for (const j of groups[i]!) {
+        const r = await fillRegion(j.target, opts, j.feedback);
+        onResult(`${j.target.file}#${j.target.member.member}`, r);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 }
 
 /** Taranan graftan doldurulacak iskelet bölgeleri seç. */
@@ -164,11 +205,15 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
   for (const t of targets) byKey.set(`${t.file}#${t.member.member}`, t);
 
   const results = new Map<string, FillRegionResult>();
-  for (const t of targets) {
-    const r = await fillRegion(t, opts);
-    results.set(`${t.file}#${t.member.member}`, r);
-    opts.onProgress?.(r);
-  }
+  // İlk dolum — dosya-bazında paralel (grup içi sıralı; aynı dosya tek worker'da).
+  await runFillJobs(
+    targets.map((t) => ({ target: t })),
+    opts,
+    (key, r) => {
+      results.set(key, r);
+      opts.onProgress?.(r);
+    },
+  );
 
   // Dolan gövdeler yerel tip kullanıp import ekleyemez → eksik import'ları topluca ekle.
   const filledFiles = [...new Set([...results.values()].filter((r) => r.status === "filled").map((r) => r.file))];
@@ -178,6 +223,7 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
     } catch {
       /* en iyi çaba */
     }
+    opts.onPhase?.({ kind: "imports", files: filledFiles.length });
   }
 
   // Katman 3 — tsc onarım döngüsü: tsc patlarsa, hatalı dosyadaki dolu bölgeleri
@@ -194,22 +240,28 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
       /* en iyi çaba */
     }
     typecheck = runTypecheck(opts.rootDir);
+    const errorCount = (typecheck.output.match(/error TS/g) ?? []).length;
+    opts.onPhase?.({ kind: "verify", round, ok: typecheck.ok, errorCount });
     if (typecheck.ok) break;
     const errsByFile = tscErrorsByFile(opts.rootDir, typecheck.output);
-    let repaired = 0;
+    // Onarılacak işleri topla: yalnız başarılı dolumlar + (import-dışı) tsc hatası olan dosyalar.
+    const repairJobs: { target: RegionTarget; feedback: string[] }[] = [];
     for (const [key, t] of byKey) {
       const r = results.get(key);
-      if (r?.status !== "filled") continue; // yalnız başarılı dolumları onar
+      if (r?.status !== "filled") continue;
       // Import hatalarını (TS2304 Cannot find name) AI'a VERME — onları import-fix
       // kapatır; AI'a vermek boşa tur (gövde yazar, import ekleyemez).
       const fileErrs = (errsByFile.get(t.file) ?? []).filter((e) => !/Cannot find name/.test(e));
       if (fileErrs.length === 0) continue;
-      const rr = await fillRegion(t, opts, [`tsc errors in ${t.file} — fix your method so the file compiles:`, ...fileErrs.slice(0, 12)]);
-      results.set(key, rr);
-      repaired++;
-      opts.onProgress?.({ ...rr, member: `${rr.member} (repair r${round})` });
+      repairJobs.push({ target: t, feedback: [`tsc errors in ${t.file} — fix your method so the file compiles:`, ...fileErrs.slice(0, 12)] });
     }
-    if (repaired === 0) break; // düzeltilebilir (import-dışı) hata kalmadı
+    if (repairJobs.length === 0) break; // düzeltilebilir (import-dışı) hata kalmadı
+    // Onarımlar da dosya-bazında paralel.
+    await runFillJobs(repairJobs, opts, (key, rr) => {
+      results.set(key, rr);
+      opts.onPhase?.({ kind: "repair", round, file: rr.file, member: rr.member });
+      opts.onProgress?.({ ...rr, member: `${rr.member} (repair r${round})` });
+    });
   }
 
   const regions = [...results.values()];
@@ -243,7 +295,10 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
 
   if (!opts.skipVerify) {
     report.typecheck = typecheck ?? runTypecheck(opts.rootDir);
-    if (report.typecheck.ok || report.filled > 0) report.tests = runTests(opts.rootDir);
+    if (report.typecheck.ok || report.filled > 0) {
+      report.tests = runTests(opts.rootDir);
+      opts.onPhase?.({ kind: "tests", ok: report.tests.ok, skipped: report.tests.skipped ?? false });
+    }
   }
   return report;
 }

@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { llmConfigFromEnv, stripCodeFences } from "../src/fill/llm.js";
 import { buildFillUser, FILL_SYSTEM } from "../src/fill/prompt.js";
 import { runToolAgent, type AgentMessage, type ChatTransport, type ToolResolver } from "../src/fill/agent.js";
-import { fillRegion, selectSkeletons } from "../src/fill/orchestrator.js";
+import { fillProject, fillRegion, selectSkeletons } from "../src/fill/orchestrator.js";
 import { generateSpecForService } from "../src/fill/spec.js";
 import type { SurgicalMember } from "@solarch/ast-core";
 
@@ -157,6 +157,46 @@ export class UserService {
     expect(r.attempts).toBe(2);
     const out = readFileSync(join(dir, "src", "user.service.ts"), "utf8");
     expect(out).toContain("NOT_IMPLEMENTED"); // stub korundu
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("fillProject — paralel (per-file), scripted transport", () => {
+  function svc(cls: string, methods: { name: string; node: string }[]): string {
+    const body = methods
+      .map(
+        (m) => `  async ${m.name}(): Promise<unknown> {
+    // @solarch:surgical id=${m.node}#${m.name}
+    // Does ${m.name}.
+    throw new Error("NOT_IMPLEMENTED: ${cls}.${m.name}");
+  }`,
+      )
+      .join("\n\n");
+    return `import { Injectable } from "@nestjs/common";\n@Injectable()\nexport class ${cls} {\n${body}\n}\n`;
+  }
+
+  it("birden çok dosyayı paralel doldurur; aynı dosyanın bölgeleri birbirini EZMEZ", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fillp-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    // a.service.ts: AYNI dosyada İKİ bölge (per-file sıralı kalmalı → ikisi de dolu).
+    writeFileSync(join(dir, "src", "a.service.ts"), svc("AService", [{ name: "doA1", node: "a1" }, { name: "doA2", node: "a2" }]));
+    writeFileSync(join(dir, "src", "b.service.ts"), svc("BService", [{ name: "doB", node: "b1" }]));
+
+    const report = await fillProject({
+      rootDir: dir,
+      llm: DUMMY_LLM,
+      transport: scriptedTransport(["return 1;"], "verify_fill"),
+      concurrency: 4, // dosyalar paralel; aynı dosya tek worker'da
+      skipVerify: true,
+    });
+
+    expect(report.filled).toBe(3);
+    const a = readFileSync(join(dir, "src", "a.service.ts"), "utf8");
+    const b = readFileSync(join(dir, "src", "b.service.ts"), "utf8");
+    // Aynı dosyadaki iki bölge de dolu → paralelde clobber yok (per-file sıralı).
+    expect(a).not.toContain("NOT_IMPLEMENTED");
+    expect(b).not.toContain("NOT_IMPLEMENTED");
+    expect(a.match(/@solarch:filled/g)?.length).toBe(2);
     rmSync(dir, { recursive: true, force: true });
   });
 });

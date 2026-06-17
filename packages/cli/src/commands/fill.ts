@@ -7,7 +7,7 @@
 
 import pc from "picocolors";
 import { llmConfigFromEnv } from "../fill/llm.js";
-import { fillProject, selectSkeletons, type FillRegionResult } from "../fill/orchestrator.js";
+import { fillProject, selectSkeletons, type FillPhase, type FillRegionResult } from "../fill/orchestrator.js";
 
 export interface FillCommandOptions {
   rootDir: string;
@@ -21,8 +21,10 @@ export interface FillCommandOptions {
   skipVerify?: boolean;
   /** Dolu servisler için gerçek davranış spec'i üret (Layer 4). */
   withTests?: boolean;
+  /** Eşzamanlı doldurulacak DOSYA sayısı (varsayılan 1 = sıralı). */
+  concurrency?: number;
   /** Makine-okur NDJSON ilerleme (renkli metin yerine). Sunucu fill servisi bunu
-   *  parse edip SSE'ye çevirir: bölge başına bir satır + sonda bir `report`. */
+   *  parse edip SSE'ye çevirir: bölge başına bir satır + faz olayları + sonda `report`. */
   json?: boolean;
 }
 
@@ -33,6 +35,19 @@ function printRegion(r: FillRegionResult): void {
     console.log(`  ${pc.yellow("⚠")} ${r.member} — contract not met after ${r.attempts}: ${r.violations?.join("; ")}`);
   } else {
     console.log(`  ${pc.red("✗")} ${r.member} — ${r.error}`);
+  }
+}
+
+/** Doğrulama/onarım fazı — insan-okur satır (tsc koştu, kaç hata, ne onarılıyor). */
+function printPhase(p: FillPhase): void {
+  if (p.kind === "verify") {
+    console.log(p.ok ? pc.green(`  ✓ tsc clean (round ${p.round})`) : pc.yellow(`  • tsc round ${p.round}: ${p.errorCount} error(s) → repairing`));
+  } else if (p.kind === "repair") {
+    console.log(pc.dim(`    ↻ repair r${p.round}: ${p.member} (${p.file})`));
+  } else if (p.kind === "imports") {
+    console.log(pc.dim(`  • fixed missing imports in ${p.files} file(s)`));
+  } else if (p.kind === "tests") {
+    console.log(p.skipped ? pc.dim("  • tests skipped") : p.ok ? pc.green("  ✓ tests passed") : pc.yellow("  • tests failed (residual)"));
   }
 }
 
@@ -68,11 +83,15 @@ export async function fillCommand(opts: FillCommandOptions): Promise<void> {
     llm: config,
     region: opts.region,
     maxAttempts: opts.attempts,
+    concurrency: opts.concurrency,
     skipVerify: opts.skipVerify,
     withTests: opts.withTests,
     onProgress: opts.json
       ? (r) => emit({ event: "region", status: r.status, member: r.member, file: r.file, attempts: r.attempts, violations: r.violations, error: r.error })
       : printRegion,
+    onPhase: opts.json
+      ? (p) => emit({ event: "phase", ...p })
+      : (p) => printPhase(p),
   });
 
   if (opts.json) {
