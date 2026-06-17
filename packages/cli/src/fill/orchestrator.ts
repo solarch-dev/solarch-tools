@@ -227,9 +227,11 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
   }
 
   // Katman 3 — tsc onarım döngüsü: tsc patlarsa, hatalı dosyadaki dolu bölgeleri
-  // o dosyanın derleyici hatalarını geri besleyerek yeniden doldur. ≤2 tur.
+  // o dosyanın derleyici hatalarını geri besleyerek yeniden doldur. ≤3 tur
+  // (gerçek projede her tur hatayı ~yarıya indiriyor: 21→8→3→~0).
   let typecheck: VerifyResult | undefined;
-  const maxRepairRounds = opts.skipVerify ? 0 : 2;
+  const maxRepairRounds = opts.skipVerify ? 0 : 3;
+  let lastRepaired = 0;
   for (let round = 1; round <= maxRepairRounds; round++) {
     // ÖNCE eksik import'ları ekle: önceki turun yeniden-dolumları yeni yerel tip
     // (enum/entity) kullanmış olabilir; AI import ekleyemez (yalnız gövde yazar) →
@@ -242,6 +244,7 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
     typecheck = runTypecheck(opts.rootDir);
     const errorCount = (typecheck.output.match(/error TS/g) ?? []).length;
     opts.onPhase?.({ kind: "verify", round, ok: typecheck.ok, errorCount });
+    lastRepaired = 0;
     if (typecheck.ok) break;
     const errsByFile = tscErrorsByFile(opts.rootDir, typecheck.output);
     // Onarılacak işleri topla: yalnız başarılı dolumlar + (import-dışı) tsc hatası olan dosyalar.
@@ -262,6 +265,19 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
       opts.onPhase?.({ kind: "repair", round, file: rr.file, member: rr.member });
       opts.onProgress?.({ ...rr, member: `${rr.member} (repair r${round})` });
     });
+    lastRepaired = repairJobs.length;
+  }
+  // Son turun onarımları henüz ÖLÇÜLMEDİYSE bir kez daha doğrula → report.typecheck
+  // GERÇEK final durumu yansıtsın (aksi halde son-tur onarımları rapora geçmez).
+  if (lastRepaired > 0 && !opts.skipVerify) {
+    try {
+      fixMissingImportsInFiles(opts.rootDir, filledFiles);
+    } catch {
+      /* en iyi çaba */
+    }
+    typecheck = runTypecheck(opts.rootDir);
+    const errorCount = (typecheck.output.match(/error TS/g) ?? []).length;
+    opts.onPhase?.({ kind: "verify", round: maxRepairRounds + 1, ok: typecheck.ok, errorCount });
   }
 
   const regions = [...results.values()];
