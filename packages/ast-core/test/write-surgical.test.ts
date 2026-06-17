@@ -134,13 +134,28 @@ describe("readDeclaredSurface (grounding)", () => {
     `export class NotFoundException extends Error { constructor() { super("nf"); } }`,
   );
   writeFileSync(
+    join(dir, "sub", "complaint.entity.ts"),
+    `import { Column, Entity, ManyToOne } from "typeorm";
+import { Observable } from "rxjs";
+class User {}
+@Entity()
+export class Complaint {
+  @Column({ type: "uuid" })
+  customerId!: string;
+  @ManyToOne(() => User)
+  customer?: User;
+  fetchRemote(): Observable<string> { return null as never; }
+}`,
+  );
+  writeFileSync(
     join(dir, "sub", "user.service.ts"),
     `import { UserRepository } from "./user.repository";
 import { UserRole } from "./user-role.enum";
 import { NotFoundException } from "./not-found.exception";
+import { Complaint } from "./complaint.entity";
 export class UserService {
   constructor(private readonly userRepository: UserRepository) {}
-  async x(): Promise<void> { throw new Error("NOT_IMPLEMENTED: x"); }
+  async x(): Promise<Complaint | null> { throw new Error("NOT_IMPLEMENTED: x"); }
 }`,
   );
 
@@ -158,5 +173,13 @@ export class UserService {
   });
   it("exception'ın sıfır-arg constructor'ını gösterir", () => {
     expect(surface).toMatch(/class NotFoundException \{ constructor\(\) \}/);
+  });
+  it("relation'ı (@ManyToOne) etiketler — AI flat alan (customerName) uydurmasın", () => {
+    expect(surface).toMatch(/customer: User \(relation @ManyToOne/);
+    expect(surface).toContain("customerId: string (fk scalar)");
+  });
+  it("Observable dönen metodu işaretler (firstValueFrom)", () => {
+    expect(surface).toContain("Observable");
+    expect(surface).toContain("firstValueFrom");
   });
 });

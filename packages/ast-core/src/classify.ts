@@ -75,6 +75,9 @@ export function classifyClass(cls: ClassDeclaration): NodeKind | null {
   if (hasDecorator(cls, "Controller")) return "Controller";
   if (hasDecorator(cls, "Module")) return "Module";
   if (hasDecorator(cls, "Entity")) return "Table";
+  // BullMQ tüketici: @Processor / WorkerHost bir kuyruğu işler → EventHandler.
+  // (@Injectable taşımayabilir; aşağıdaki @Injectable bloğuna düşmeden yakala.)
+  if (hasDecorator(cls, "Processor") || extendsClass(cls, ["WorkerHost"])) return "EventHandler";
 
   // Exception: HttpException zinciri veya isim sözleşmesi (dekoratör gerekmez).
   if (

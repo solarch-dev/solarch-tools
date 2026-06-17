@@ -409,12 +409,29 @@ function describeClass(cls: ClassDeclaration): string {
     .filter((m) => m.getScope() !== "private" && m.getScope() !== "protected")
     .map((m) => {
       const params = m.getParameters().map((p) => `${p.getName()}: ${cleanType(p.getTypeNode()?.getText() ?? "unknown")}`).join(", ");
-      return `${m.getName()}(${params}): ${cleanType(m.getReturnTypeNode()?.getText() ?? "void")}`;
+      const ret = cleanType(m.getReturnTypeNode()?.getText() ?? "void");
+      // RxJS dep'leri (örn. HttpService) Observable döner — AI'a unwrap'ı hatırlat
+      // (Observable'da `.data` YOK; firstValueFrom/lastValueFrom gerekir).
+      const obs = /\bObservable\s*</.test(ret) ? " [Observable — unwrap with firstValueFrom]" : "";
+      return `${m.getName()}(${params}): ${ret}${obs}`;
     });
+  const RELATION_DECOS = new Set(["ManyToOne", "OneToMany", "OneToOne", "ManyToMany"]);
   const fields = cls
     .getProperties()
     .filter((p) => !p.isStatic() && p.getScope() !== "private")
-    .map((p) => `${p.getName()}: ${cleanType(p.getTypeNode()?.getText() ?? "unknown")}`);
+    .map((p) => {
+      const pname = p.getName();
+      const type = cleanType(p.getTypeNode()?.getText() ?? "unknown");
+      const decos = p.getDecorators().map((d) => d.getName());
+      const rel = decos.find((d) => RELATION_DECOS.has(d));
+      if (rel) {
+        // İLİŞKİ: alt-alanlarına relation ÜZERİNDEN erişilir (customer.name) — düz
+        // `customerName` UYDURMA. AI bu etiketi okuyup doğru yolu kullanır.
+        return `${pname}: ${type} (relation @${rel} — read its fields via ${pname}.<field> e.g. ${pname}.name; do NOT invent a flat ${pname}Name/${pname}Id)`;
+      }
+      if (/Id$/.test(pname) && /\bstring\b/.test(type)) return `${pname}: ${type} (fk scalar)`;
+      return `${pname}: ${type}`;
+    });
   const lines = [`class ${name} { constructor(${ctorParams}) }`];
   if (methods.length) lines.push(`  methods: ${methods.join("; ")}`);
   if (fields.length) lines.push(`  fields: ${fields.join(", ")}`);
