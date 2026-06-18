@@ -161,6 +161,66 @@ export class UserService {
   });
 });
 
+describe("lookup_members + deterministik snap (scripted transport)", () => {
+  function fixture(dir: string): void {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "user.entity.ts"), `export class User {\n  Id!: string;\n  fullName!: string;\n  email!: string;\n}\n`);
+    writeFileSync(
+      join(dir, "src", "user.service.ts"),
+      [
+        `import { Injectable } from "@nestjs/common";`,
+        `import { User } from "./user.entity";`,
+        ``,
+        `@Injectable()`,
+        `export class UserService {`,
+        `  getName(user: User): string {`,
+        `    // @solarch:surgical id=u1#getName`,
+        `    throw new Error("NOT_IMPLEMENTED: UserService.getName");`,
+        `  }`,
+        `}`,
+        ``,
+      ].join("\n"),
+    );
+  }
+
+  it("lookup_members owned tipin GERÇEK üyelerini döndürür; agent sonra verify_fill ile geçer", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lm-"));
+    fixture(dir);
+    const target = selectSkeletons(dir)[0]!;
+    let lookupResponse = "";
+    let i = 0;
+    // 2 turlu transport: önce lookup_members(User), sonra verify_fill(doğru gövde).
+    const transport: ChatTransport = async (messages) => {
+      i += 1;
+      if (i === 1) {
+        return { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "lookup_members", arguments: JSON.stringify({ type: "User" }) } }] };
+      }
+      const toolMsg = messages.filter((m) => m.role === "tool").pop();
+      lookupResponse = String(toolMsg?.content ?? "");
+      return { role: "assistant", content: null, tool_calls: [{ id: "c2", type: "function", function: { name: "verify_fill", arguments: JSON.stringify({ code: "return user.fullName;" }) } }] };
+    };
+    const r = await fillRegion(target, { rootDir: dir, llm: DUMMY_LLM, transport, skipVerify: true });
+    expect(r.status).toBe("filled");
+    // lookup_members owned User'ın gerçek üyelerini döndürdü (uydurma değil).
+    expect(lookupResponse).toContain("fullName");
+    expect(lookupResponse).toContain('"kind":"class"');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("yanlış-case üye (user.id) tek turda snap'lenir (user.Id) ve YEŞİL geçer; saklanan gövde düzeltilmiş", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "snap-"));
+    fixture(dir);
+    const target = selectSkeletons(dir)[0]!;
+    const r = await fillRegion(target, { rootDir: dir, llm: DUMMY_LLM, transport: scriptedTransport(["return user.id;"], "verify_fill"), skipVerify: true });
+    expect(r.status).toBe("filled"); // snap sonrası ihlal yok → tek tur yeşil
+    expect(r.body).toContain("user.Id"); // saklanan gövde düzeltilmiş (re-inject güvenli)
+    const out = readFileSync(join(dir, "src", "user.service.ts"), "utf8");
+    expect(out).toContain("user.Id"); // disk düzeltilmiş
+    expect(out).not.toContain("user.id;"); // ham yanlış-case kalmadı
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
 describe("fillProject — paralel (per-file), scripted transport", () => {
   function svc(cls: string, methods: { name: string; node: string }[]): string {
     const body = methods

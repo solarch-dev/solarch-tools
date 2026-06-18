@@ -5,10 +5,26 @@
  *  maxAttempts. A contract-passing fill is saved to disk; a region that never
  *  passes leaves its NOT_IMPLEMENTED stub untouched (failures never persist).
  *  After all regions: tsc + test gates over the whole project (the heavy,
- *  high-signal verification the user asked for). */
+ *  high-signal verification the user asked for).
+ *
+ *  DETERMINISM (IntelliSense-style): the AI writes SEMANTICS (control flow, which
+ *  member/dep/exception it means); the SYSTEM resolves IDENTITY of owned (src/)
+ *  types. Two mechanisms, both reusing ast-core's closed-world type resolution:
+ *    - lookup_members(type): on-demand generator (completeType) the agent queries
+ *      for the EXACT members/enum-literals/exception-ctor before referencing them.
+ *    - autoCorrectMembers (in writeSurgicalBody): snaps a unique near-miss
+ *      (user.id → user.Id) to the real member BEFORE validation. Ambiguous/invented
+ *      members are left for checkMemberAccess to reject. The model never invents an
+ *      owned identifier; library (node_modules) members + arity stay tsc's job.
+ *
+ *  FUTURE (parked, self-hosted-only): grammar/logit-constrained decoding — make an
+ *  invalid identifier physically un-emittable. Blocked by the hosted DeepSeek
+ *  /chat/completions transport (no logit_bias/grammar/response_format; see agent.ts);
+ *  would need vLLM/llama.cpp with allowedMembersForReceiver (membersOf) as the mask.
+ *  Not built; the closed-world member set is already computed for the two paths above. */
 
 import { join } from "node:path";
-import { fixMissingImportsInFiles, readDeclaredSurface, readFillContext, tryFillSurgicalBody, type SurgicalMember } from "@solarch/ast-core";
+import { completeType, fixMissingImportsInFiles, readDeclaredSurface, readFillContext, tryFillSurgicalBody, type SurgicalMember } from "@solarch/ast-core";
 import { runScan } from "../commands/scan.js";
 import { FILL_SYSTEM, buildFillUser } from "./prompt.js";
 import { stripCodeFences, type LlmConfig } from "./llm.js";
@@ -29,6 +45,25 @@ const VERIFY_FILL_TOOL: AgentTool = {
     type: "object",
     properties: { code: { type: "string", description: "The method body statements (TypeScript)." } },
     required: ["code"],
+    additionalProperties: false,
+  },
+};
+
+/** lookup_members tool — IntelliSense: salt-okunur. Bir owned (proje) tip ADINI
+ *  verince GERÇEK üyelerini / metot imzalarını / enum literal'lerini / exception
+ *  ctor'unu döndürür. Model bir üye/enum/exception yazımından EMİN DEĞİLSE bunu
+ *  çağırır, uydurmaz. `done` döndürmez → agent loop devam eder. */
+const LOOKUP_MEMBERS_TOOL: AgentTool = {
+  name: "lookup_members",
+  description:
+    "Look up the EXACT members of an owned (project) type before you reference them — never guess an identifier. " +
+    "Pass a class/enum/exception name from the API surface (e.g. User, OrderStatus, NotFoundException). Returns its " +
+    "real members/method signatures (class), literals (enum), or constructor (exception); {kind:'unknown'} if the " +
+    "type is third-party/not in scope. Use the returned spelling/casing verbatim.",
+  parameters: {
+    type: "object",
+    properties: { type: { type: "string", description: "An owned class/enum/exception name from the API surface." } },
+    required: ["type"],
     additionalProperties: false,
   },
 };
@@ -154,6 +189,13 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
   let toolError: string | undefined;
   let filledBody: string | undefined; // diske yazılan doğrulanmış gövde (kalıcı sakla)
   const resolve: ToolResolver = async (call) => {
+    // lookup_members (IntelliSense, salt-okunur): GERÇEK üyeleri döndür, loop devam eder.
+    if (call.name === "lookup_members") {
+      const typeName = typeof call.args?.type === "string" ? call.args.type.trim() : "";
+      if (!typeName) return { content: JSON.stringify({ error: "pass an owned type name in `type`" }) };
+      return { content: JSON.stringify(completeType(filePath, typeName)) };
+    }
+    // verify_fill (varsayılan): doğrula + temizse commit.
     const code = typeof call.args?.code === "string" ? call.args.code.trim() : "";
     if (!code) return { content: JSON.stringify({ ok: false, violations: ["empty code — pass the method body statements in `code`"] }) };
     const body = stripCodeFences(code);
@@ -162,12 +204,15 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
       toolError = res.error;
       return { content: JSON.stringify({ ok: false, violations: [res.error] }) };
     }
+    // Deterministik snap'leri (user.id -> user.Id) agent'a BİLGİ olarak ekle (ihlal değil).
+    const corrected = res.corrections && res.corrections.length > 0 ? { corrected: res.corrections } : {};
     if ((res.violations?.length ?? 0) === 0) {
-      filledBody = body.trim();
-      return { content: JSON.stringify({ ok: true }), done: true, result: true };
+      // Snap SONRASI gövdeyi sakla (disk düzeltilmiş; re-inject'te de doğru kalsın).
+      filledBody = (res.body ?? body).trim();
+      return { content: JSON.stringify({ ok: true, ...corrected }), done: true, result: true };
     }
     lastViolations = res.violations;
-    return { content: JSON.stringify({ ok: false, violations: res.violations }) };
+    return { content: JSON.stringify({ ok: false, violations: res.violations, ...corrected }) };
   };
 
   let agent;
@@ -177,7 +222,7 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
       transport: opts.transport,
       system: FILL_SYSTEM,
       user: buildFillUser(target.member, ctx, feedback),
-      tools: [VERIFY_FILL_TOOL],
+      tools: [VERIFY_FILL_TOOL, LOOKUP_MEMBERS_TOOL],
       resolve,
       forceFirstTool: "verify_fill",
       maxRounds: opts.maxAttempts ?? 5,

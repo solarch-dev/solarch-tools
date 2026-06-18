@@ -28,7 +28,7 @@
 
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { ClassDeclaration, EnumDeclaration, MethodDeclaration, Project, SyntaxKind, ts } from "ts-morph";
+import { ClassDeclaration, EnumDeclaration, MethodDeclaration, Node, Project, SyntaxKind, ts, Type } from "ts-morph";
 
 export type SurgicalStatus = "skeleton" | "filled";
 export type FilledBy = "ai" | "human";
@@ -69,6 +69,18 @@ const BUILTIN_MEMBERS = new Set([
   "hasOwnProperty", "toString", "valueOf", "isPrototypeOf",
   "propertyIsEnumerable", "toLocaleString", "then", "catch", "finally",
 ]);
+
+/** Bir tipin GERÇEK (sahip olduğumuz) üye adları — apparent type'ın property'leri,
+ *  dahili (__) ve Object/Promise built-in'leri elenmiş. checkMemberAccess (ihlal
+ *  listesi), completeType (tamamlama) ve autoCorrectMembers (snap) TEK KAYNAKtan
+ *  beslensin diye burada. */
+function membersOf(t: Type): string[] {
+  return t
+    .getApparentType()
+    .getProperties()
+    .map((p) => p.getName())
+    .filter((m) => !m.startsWith("__") && !BUILTIN_MEMBERS.has(m));
+}
 
 /* ── sözleşme denetimi ───────────────────────────────────────────── */
 
@@ -184,15 +196,67 @@ function checkMemberAccess(method: MethodDeclaration): string[] {
     const key = `${t.getText()}.${name}`;
     if (reported.has(key)) continue;
     reported.add(key);
-    const allowed = apparent
-      .getProperties()
-      .map((p) => p.getName())
-      .filter((m) => !m.startsWith("__") && !BUILTIN_MEMBERS.has(m));
+    const allowed = membersOf(t);
     violations.push(
       `property "${name}" does not exist on type "${cleanType(t.getText())}" — use ONLY its real members: ${allowed.join(", ")} (do not invent member names)`,
     );
   }
   return violations;
+}
+
+/** Bir owned-tip kaçırmasını GERÇEK üyeye eşleyebilir miyiz? Yalnız tam BİR aday
+ *  varsa döndür (muhafazakâr — anlamı asla sessizce değiştirmesin):
+ *    (a) case-insensitive: `id` → `Id`, `fullname` → `fullName`
+ *    (b) canon (snake/camel, alfanümerik): `full_name` → `fullName`
+ *  Çoğul/tekil eşleme (`orders`↔`order`) bilerek ERTELENDİ (en yüksek belirsizlik
+ *  riski; gerçek fill trace'leri görülünce aynı unique-guard'la eklenecek). */
+function uniqueMemberMatch(name: string, members: string[]): string | null {
+  let cands = members.filter((m) => m.toLowerCase() === name.toLowerCase());
+  if (cands.length === 1) return cands[0]!;
+  if (cands.length > 1) return null;
+  cands = members.filter((m) => canon(m) === canon(name));
+  if (cands.length === 1) return cands[0]!;
+  return null;
+}
+
+/** DETERMİNİSTİK SNAP (IntelliSense'in "doğrusunu doldur" hâli). Gövdedeki her
+ *  `recv.member` için: recv BİZİM (src/) bir tipe çözülüyor ve `member` o tipte YOK
+ *  ama GERÇEK üyeye tam-bir-adayla eşleşiyorsa (case/canon), düğümü yerinde gerçek
+ *  ada çevir (`user.id` → `user.Id`). 0 veya 2+ aday → DOKUNMA (checkMemberAccess
+ *  yine ihlal verir, lookup_members yönlendirir). Düzeltilenleri "recv.eski ->
+ *  recv.yeni" olarak döndürür. checkMemberAccess ile AYNI yürüyüş/owned-kapı. */
+function autoCorrectMembers(method: MethodDeclaration): string[] {
+  const body = method.getBody();
+  if (!body) return [];
+  // İKİ GEÇİŞ: önce eşleşmeleri topla (mutasyonsuz), sonra uygula — array snapshot'taki
+  // sonraki düğümler geçersizleşmesin (her name-node bağımsız; replaceWithText yerel).
+  const pending: { nameNode: Node; recv: string; from: string; to: string }[] = [];
+  for (const access of body.getDescendantsOfKind(SyntaxKind.PropertyAccessExpression)) {
+    const name = access.getName();
+    if (BUILTIN_MEMBERS.has(name)) continue;
+    let t;
+    try {
+      t = access.getExpression().getType().getNonNullableType();
+    } catch {
+      continue;
+    }
+    if (t.isAny() || t.isUnknown() || t.isUnion() || t.isIntersection() || t.isTypeParameter()) continue;
+    if (t.getText().startsWith("typeof ")) continue;
+    const sym = t.getSymbol() ?? t.getAliasSymbol();
+    const decls = sym?.getDeclarations() ?? [];
+    const isOwn = decls.length > 0 && decls.some((d) => /[/\\]src[/\\]/.test(d.getSourceFile().getFilePath()));
+    if (!isOwn) continue;
+    if (t.getApparentType().getProperty(name)) continue; // zaten gerçek
+    const real = uniqueMemberMatch(name, membersOf(t));
+    if (!real || real === name) continue;
+    pending.push({ nameNode: access.getNameNode(), recv: access.getExpression().getText(), from: name, to: real });
+  }
+  const fixed: string[] = [];
+  for (const p of pending) {
+    p.nameNode.replaceWithText(p.to);
+    fixed.push(`${p.recv}.${p.from} -> ${p.recv}.${p.to}`);
+  }
+  return fixed;
 }
 
 /** TİP-GİZLEYEN CAST yasağı (forbidden-moves geçidi). `x as any` / `x as unknown`
@@ -310,7 +374,22 @@ export interface WriteBodyResult {
   member: string;
   /** Yazımdan sonra yeniden denetlenen sözleşme ihlalleri (varsa). */
   violations?: string[];
+  /** Deterministik snap'lerin denetim izi ("user.id -> user.Id"). İhlal DEĞİL —
+   *  kaydı engellemez; agent'a bilgi olarak geri verilir (loop içinde öğrenir). */
+  corrections?: string[];
+  /** Diske yazılan GERÇEK gövde statements'ı (snap SONRASI). Re-inject edildiğinde
+   *  de doğru kalsın diye marker/imza bloğu soyulmuş hâl — çağıran bunu saklamalı. */
+  body?: string;
   error?: string;
+}
+
+/** Gövde metninden (getBodyText) baştaki marker/imza/boş satırları soyup gerçek
+ *  statements'ı döndürür — re-inject için saklanacak hâl. */
+function bodyStatements(bodyText: string): string {
+  const lines = bodyText.split("\n");
+  let i = 0;
+  while (i < lines.length && (lines[i]!.trim() === "" || lines[i]!.trim().startsWith("//"))) i++;
+  return lines.slice(i).join("\n").trim();
 }
 
 /** Gövde kodu geçerli bir TS deyim-bloğu mu? Değilse ilk sözdizimi hatasının
@@ -372,6 +451,11 @@ export function writeSurgicalBody(
   const filledSig = `// @solarch:filled by=ai at=${filledAtIso}`;
   method.setBodyText([...markerLines, filledSig, "", bodyCode.trim()].join("\n"));
 
+  // DETERMİNİSTİK SNAP (IntelliSense): owned-tip üye yakın-kaçırmalarını (user.id →
+  // user.Id) checkMemberAccess'TEN ÖNCE gerçek ada çevir. Tek-aday yoksa dokunmaz →
+  // checkMemberAccess yine ihlal verir. Snap'ler ihlal değildir; agent'a bilgi döner.
+  const corrections = autoCorrectMembers(method);
+
   const re = readMethodMarker(method, injectedDeps(cls));
   // Sözleşme (deps/throws) + KAPALI-DÜNYA üye denetimi: gövde, ürettiğimiz tiplerin
   // var olmayan üyelerine erişmemeli (halüsinasyon geçidi — gerçek üye listesi döner).
@@ -380,7 +464,13 @@ export function writeSurgicalBody(
     ...checkMemberAccess(method),
     ...checkForbiddenCasts(method),
   ];
-  return { ok: true, member, violations: violations.length > 0 ? violations : undefined };
+  return {
+    ok: true,
+    member,
+    body: bodyStatements(method.getBodyText() ?? ""),
+    violations: violations.length > 0 ? violations : undefined,
+    corrections: corrections.length > 0 ? corrections : undefined,
+  };
 }
 
 /** Dolan gövdeler yerel tipler (örn. bir entity) kullanıp dosya başına import
@@ -443,6 +533,80 @@ export function fixMissingImportsInFiles(rootDir: string, relFiles: string[]): {
   return { fixed };
 }
 
+/* ── completeType: IntelliSense üreticisi (lookup_members tool'unun kaynağı) ── */
+
+export interface CompleteTypeResult {
+  /** Çözülen tipin türü; owned (src/) değilse 'unknown' — üye SUNULMAZ. */
+  kind: "class" | "exception" | "enum" | "unknown";
+  /** Class/exception: public alan adları (gerçek üyeler). */
+  members?: string[];
+  /** Class/exception: public metot imzaları (ad + arity + generic). */
+  signatures?: string[];
+  /** Enum: üye adı + değeri. */
+  enumLiterals?: { name: string; value: string | number | undefined }[];
+  /** Class/exception: constructor parametre imzası. */
+  ctor?: string;
+}
+
+/** Bir owned (src/) tip ADINI verince GERÇEK yüzeyini döndürür: sınıf üyeleri/metot
+ *  imzaları, enum literal'leri, exception ctor'u. Tip ÖNCE dosyanın kendisinde,
+ *  sonra YEREL import'larında aranır (3. parti/node_modules çözülmez → 'unknown').
+ *  checkMemberAccess ile AYNI kapalı-dünya: yalnız sahip olduğumuz tipler sunulur,
+ *  böylece agent uydurma değil GERÇEK üyeden seçer. lookup_members tool'u bunu sarar. */
+export function completeType(filePath: string, typeName: string): CompleteTypeResult {
+  const project = new Project({ skipAddingFilesFromTsConfig: true });
+  let sf;
+  try {
+    sf = project.addSourceFileAtPath(filePath);
+  } catch {
+    return { kind: "unknown" };
+  }
+  let cls = sf.getClass(typeName);
+  let en = sf.getEnum(typeName);
+  if (!cls && !en) {
+    const fromDir = dirname(filePath);
+    for (const imp of sf.getImportDeclarations()) {
+      const spec = imp.getModuleSpecifierValue();
+      if (!spec.startsWith(".")) continue; // yalnız yerel tipler (owned)
+      if (!imp.getNamedImports().some((ni) => ni.getName() === typeName)) continue;
+      const resolved = resolveLocalImport(fromDir, spec);
+      if (!resolved) continue;
+      try {
+        const depSf = project.addSourceFileAtPath(resolved);
+        cls = depSf.getClass(typeName);
+        en = depSf.getEnum(typeName);
+      } catch {
+        continue;
+      }
+      if (cls || en) break;
+    }
+  }
+  if (en) {
+    return {
+      kind: "enum",
+      enumLiterals: en.getMembers().map((m) => ({ name: m.getName(), value: m.getValue() })),
+    };
+  }
+  if (cls) {
+    const ctor = cls.getConstructors()[0];
+    const ctorText = ctor
+      ? ctor.getParameters().map((p) => `${p.getName()}: ${cleanType(p.getTypeNode()?.getText() ?? "unknown")}`).join(", ")
+      : "";
+    const members = cls
+      .getProperties()
+      .filter((p) => !p.isStatic() && p.getScope() !== "private")
+      .map((p) => p.getName());
+    const signatures = cls
+      .getMethods()
+      .filter((m) => m.getScope() !== "private" && m.getScope() !== "protected")
+      .map(methodSignature);
+    const extendsText = cls.getExtends()?.getText() ?? "";
+    const isException = /Exception$/.test(typeName) || /Exception|Error/.test(extendsText);
+    return { kind: isException ? "exception" : "class", members, signatures, ctor: ctorText };
+  }
+  return { kind: "unknown" };
+}
+
 /* ── dosya-düzeyi fill köprüsü (ts-morph ast-core'da kapsüllü) ────── */
 
 export interface SurgicalFillContext {
@@ -485,6 +649,22 @@ function cleanType(t: string): string {
   return t.replace(/import\([^)]*\)\./g, "").replace(/\s+/g, " ").trim();
 }
 
+/** Tek public metodun grounding imzası: ad + generic `<T>` + paramlar + dönüş +
+ *  Observable/generic ipuçları. describeClass ve completeType TEK KAYNAKtan alsın. */
+function methodSignature(m: MethodDeclaration): string {
+  // GENERIC type param'ları (`<T>`) İMZADA göster — yoksa AI `get(): Promise<T|null>`'i
+  // görüp T'yi gizem sanır, çıplak `get()` çağırır → T={} → tsc TS2740.
+  const tps = m.getTypeParameters().map((tp) => tp.getText());
+  const generic = tps.length > 0 ? `<${tps.join(", ")}>` : "";
+  const params = m.getParameters().map((p) => `${p.getName()}: ${cleanType(p.getTypeNode()?.getText() ?? "unknown")}`).join(", ");
+  const ret = cleanType(m.getReturnTypeNode()?.getText() ?? "void");
+  // RxJS Observable dönüşü → AI'a unwrap'ı hatırlat (firstValueFrom/lastValueFrom).
+  const obs = /\bObservable\s*</.test(ret) ? " [Observable — unwrap with firstValueFrom]" : "";
+  // Generic metot: tip argümanı VERİLMELİ (get<Category>()) yoksa T çözülmez.
+  const genericHint = generic ? ` [generic — pass a type argument matching what you return, e.g. ${m.getName()}<YourType>(...)]` : "";
+  return `${m.getName()}${generic}(${params}): ${ret}${obs}${genericHint}`;
+}
+
 /** Bir sınıfın çağrılabilir yüzeyi: constructor arity, public metod imzaları,
  *  public alanlar. AI'ın var olmayan metod/arity uydurmasını engeller. */
 function describeClass(cls: ClassDeclaration): string {
@@ -496,21 +676,7 @@ function describeClass(cls: ClassDeclaration): string {
   const methods = cls
     .getMethods()
     .filter((m) => m.getScope() !== "private" && m.getScope() !== "protected")
-    .map((m) => {
-      // GENERIC type param'ları (`<T>`) İMZADA göster — yoksa AI `get(): Promise<T|null>`'i
-      // görüp T'yi gizem sanır, çıplak `get()` çağırır → T={} → tsc TS2740 (gerçek bug:
-      // CategoryCache.get() Category yerine {} döndü). `<T>` + hint AI'a parametrelemeyi söyler.
-      const tps = m.getTypeParameters().map((tp) => tp.getText());
-      const generic = tps.length > 0 ? `<${tps.join(", ")}>` : "";
-      const params = m.getParameters().map((p) => `${p.getName()}: ${cleanType(p.getTypeNode()?.getText() ?? "unknown")}`).join(", ");
-      const ret = cleanType(m.getReturnTypeNode()?.getText() ?? "void");
-      // RxJS dep'leri (örn. HttpService) Observable döner — AI'a unwrap'ı hatırlat
-      // (Observable'da `.data` YOK; firstValueFrom/lastValueFrom gerekir).
-      const obs = /\bObservable\s*</.test(ret) ? " [Observable — unwrap with firstValueFrom]" : "";
-      // Generic metot: tip argümanı VERİLMELİ (get<Category>()) yoksa T çözülmez.
-      const genericHint = generic ? ` [generic — pass a type argument matching what you return, e.g. ${m.getName()}<YourType>(...)]` : "";
-      return `${m.getName()}${generic}(${params}): ${ret}${obs}${genericHint}`;
-    });
+    .map(methodSignature);
   const RELATION_DECOS = new Set(["ManyToOne", "OneToMany", "OneToOne", "ManyToMany"]);
   const fields = cls
     .getProperties()

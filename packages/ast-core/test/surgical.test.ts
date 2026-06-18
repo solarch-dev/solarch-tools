@@ -1,11 +1,11 @@
 /** Surgical marker okuma — codegen formatındaki işaretlerin skeleton/filled
  *  sınıflandırması ve metadata (description/throws/deps) çıkarımı. */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { readDeclaredSurface, scanProject, summarizeSurgical } from "../src/index.js";
+import { completeType, readDeclaredSurface, scanProject, summarizeSurgical, tryFillSurgicalBody } from "../src/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ast-surgical-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -136,5 +136,89 @@ describe("readDeclaredSurface — generic metot type-param'ı GÖSTERİR (fill p
     // del generic DEĞİL -> hint yok.
     expect(surface).toMatch(/del\(\): Promise<void>/);
     expect(surface).not.toMatch(/del<.*>\(/);
+  });
+});
+
+describe("completeType + autoCorrectMembers — IntelliSense üretici/snap (LLM'siz, gerçek ast-core)", () => {
+  const cdir = mkdtempSync(join(tmpdir(), "ast-complete-"));
+  afterAll(() => rmSync(cdir, { recursive: true, force: true }));
+  mkdirSync(join(cdir, "src"), { recursive: true });
+  const svcPath = join(cdir, "src", "user.service.ts");
+  writeFileSync(
+    join(cdir, "src", "user.entity.ts"),
+    `export class User {\n  Id!: string;\n  fullName!: string;\n  email!: string;\n}\n`,
+  );
+  writeFileSync(
+    join(cdir, "src", "order-status.enum.ts"),
+    `export enum OrderStatus {\n  PENDING = "pending",\n  SHIPPED = "shipped",\n}\n`,
+  );
+  writeFileSync(
+    join(cdir, "src", "not-found.exception.ts"),
+    `export class NotFoundException extends Error {\n  constructor(message?: string) {\n    super(message);\n  }\n}\n`,
+  );
+  writeFileSync(
+    svcPath,
+    [
+      `import { User } from "./user.entity";`,
+      `import { OrderStatus } from "./order-status.enum";`,
+      `import { NotFoundException } from "./not-found.exception";`,
+      ``,
+      `export class UserService {`,
+      `  getProfile(user: User): string {`,
+      `    // @solarch:surgical id=aaaa1111-2222-3333-4444-555566667777#getProfile`,
+      `    throw new Error("NOT_IMPLEMENTED: UserService.getProfile");`,
+      `  }`,
+      ``,
+      `  getName(user: User): string {`,
+      `    // @solarch:surgical id=aaaa1111-2222-3333-4444-555566667778#getName`,
+      `    throw new Error("NOT_IMPLEMENTED: UserService.getName");`,
+      `  }`,
+      `}`,
+      ``,
+    ].join("\n"),
+  );
+
+  it("completeType: class -> gerçek public üyeler + metot imzaları", () => {
+    const r = completeType(svcPath, "User");
+    expect(r.kind).toBe("class");
+    expect(r.members).toEqual(expect.arrayContaining(["Id", "fullName", "email"]));
+  });
+
+  it("completeType: enum -> tüm literal'ler (ad + değer)", () => {
+    const r = completeType(svcPath, "OrderStatus");
+    expect(r.kind).toBe("enum");
+    expect(r.enumLiterals).toEqual(
+      expect.arrayContaining([
+        { name: "PENDING", value: "pending" },
+        { name: "SHIPPED", value: "shipped" },
+      ]),
+    );
+  });
+
+  it("completeType: exception -> kind:'exception' + ctor imzası", () => {
+    const r = completeType(svcPath, "NotFoundException");
+    expect(r.kind).toBe("exception");
+    expect(r.ctor).toContain("message");
+  });
+
+  it("completeType: import edilmemiş / owned-dışı tip -> kind:'unknown' (üye sunulmaz)", () => {
+    expect(completeType(svcPath, "Repository").kind).toBe("unknown");
+  });
+
+  it("SNAP: yanlış-case üye (user.id) gerçek üyeye (user.Id) çevrilir + kaydedilir", () => {
+    const r = tryFillSurgicalBody(svcPath, "UserService", "getProfile", "return user.id;", "2026-06-18T00:00:00Z");
+    expect(r.ok).toBe(true);
+    expect(r.violations ?? []).toHaveLength(0); // snap sonrası ihlal yok
+    expect(r.corrections).toContain("user.id -> user.Id");
+    expect(readFileSync(svcPath, "utf8")).toContain("user.Id"); // diske düzeltilmiş yazıldı
+  });
+
+  it("UYDURMA: tek-aday olmayan üye (user.username) snap'lenmez -> violation + KAYDEDİLMEZ", () => {
+    const before = readFileSync(svcPath, "utf8");
+    const r = tryFillSurgicalBody(svcPath, "UserService", "getName", "return user.username;", "2026-06-18T00:00:00Z");
+    expect(r.ok).toBe(true);
+    expect((r.violations ?? []).length).toBeGreaterThan(0); // hâlâ ihlal
+    expect(r.corrections ?? []).toHaveLength(0); // snap yok
+    expect(readFileSync(svcPath, "utf8")).toBe(before); // diske YAZILMADI
   });
 });

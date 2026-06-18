@@ -34,6 +34,8 @@ export const FILL_SYSTEM = [
   "When the API surface marks a method as [generic] (it has a <T> type parameter), you MUST pass a concrete",
   "type argument that matches what you return — e.g. `cache.get<Category>()` not `cache.get()`. A bare call",
   "leaves T unresolved ({}), which the type-checker rejects.",
+  "Before referencing a member/field/enum value/exception of an owned (project) type you are unsure of, call",
+  "lookup_members(type) to get its exact spelling — never guess an owned identifier (e.g. user.Id, not user.id).",
 ].join("\n");
 
 /** Tek bölgenin görev mesajı (ajan user turn'ü). */
