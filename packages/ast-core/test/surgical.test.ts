@@ -146,7 +146,7 @@ describe("completeType + autoCorrectMembers — IntelliSense üretici/snap (LLM'
   const svcPath = join(cdir, "src", "user.service.ts");
   writeFileSync(
     join(cdir, "src", "user.entity.ts"),
-    `export class User {\n  Id!: string;\n  fullName!: string;\n  email!: string;\n}\n`,
+    `import { OrderStatus } from "./order-status.enum";\nexport class User {\n  Id!: string;\n  fullName!: string;\n  email!: string;\n  status!: OrderStatus;\n}\n`,
   );
   writeFileSync(
     join(cdir, "src", "order-status.enum.ts"),
@@ -172,6 +172,11 @@ describe("completeType + autoCorrectMembers — IntelliSense üretici/snap (LLM'
       `  getName(user: User): string {`,
       `    // @solarch:surgical id=aaaa1111-2222-3333-4444-555566667778#getName`,
       `    throw new Error("NOT_IMPLEMENTED: UserService.getName");`,
+      `  }`,
+      ``,
+      `  markStatus(user: User): void {`,
+      `    // @solarch:surgical id=aaaa1111-2222-3333-4444-555566667780#markStatus`,
+      `    throw new Error("NOT_IMPLEMENTED: UserService.markStatus");`,
       `  }`,
       `}`,
       ``,
@@ -220,5 +225,15 @@ describe("completeType + autoCorrectMembers — IntelliSense üretici/snap (LLM'
     expect((r.violations ?? []).length).toBeGreaterThan(0); // hâlâ ihlal
     expect(r.corrections ?? []).toHaveLength(0); // snap yok
     expect(readFileSync(svcPath, "utf8")).toBe(before); // diske YAZILMADI
+  });
+
+  it("ENUM-SNAP: owned enum'a atanan string (user.status = \"PENDING\") gerçek üyeye çevrilir", () => {
+    const r = tryFillSurgicalBody(svcPath, "UserService", "markStatus", 'user.status = "PENDING";', "2026-06-18T00:00:00Z");
+    expect(r.ok).toBe(true);
+    expect(r.violations ?? []).toHaveLength(0);
+    expect(r.corrections).toContain('"PENDING" -> OrderStatus.PENDING');
+    const out = readFileSync(svcPath, "utf8");
+    expect(out).toContain("user.status = OrderStatus.PENDING");
+    expect(out).not.toContain('user.status = "PENDING"');
   });
 });

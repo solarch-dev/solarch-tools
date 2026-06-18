@@ -259,6 +259,72 @@ function autoCorrectMembers(method: MethodDeclaration): string[] {
   return fixed;
 }
 
+function singleOrNull<T>(arr: T[]): T | null {
+  return arr.length === 1 ? arr[0]! : null;
+}
+
+/** Bir tipin (contextual) owned (src/) enum BİLDİRİMİNİ döndürür — enum'un kendisi
+ *  ya da enum-literal birleşimi (TableStatus.A | TableStatus.B) olabilir. Owned
+ *  değilse / enum değilse null. autoCorrectEnumLiterals için. */
+function ownedEnumDecl(t: Type): EnumDeclaration | null {
+  const fromSym = (sym: ReturnType<Type["getSymbol"]>): EnumDeclaration | null => {
+    for (const d of sym?.getDeclarations() ?? []) {
+      if (d.getKind() === SyntaxKind.EnumDeclaration) return d as EnumDeclaration;
+      if (d.getKind() === SyntaxKind.EnumMember) {
+        const e = d.getFirstAncestorByKind(SyntaxKind.EnumDeclaration);
+        if (e) return e;
+      }
+    }
+    return null;
+  };
+  let en = fromSym(t.getSymbol()) ?? fromSym(t.getAliasSymbol());
+  if (!en && t.isUnion()) {
+    for (const u of t.getUnionTypes()) {
+      en = fromSym(u.getSymbol()) ?? fromSym(u.getAliasSymbol());
+      if (en) break;
+    }
+  }
+  if (!en) return null;
+  if (!/[/\\]src[/\\]/.test(en.getSourceFile().getFilePath())) return null;
+  return en;
+}
+
+/** ENUM-LITERAL SNAP (snap'in enum hâli). Owned bir enum'a atanan STRING literal'i
+ *  gerçek üyeye çevirir: `x.status = "AVAILABLE"` → `x.status = TableStatus.AVAILABLE`
+ *  (tsc TS2820). Yalnız beklenen tip (contextual) owned bir enum VE string benzersiz
+ *  bir üyeyle (önce AD, sonra DEĞER) eşleşiyorsa; aksi halde DOKUNMAZ. Enum import
+ *  edilmemişse repair'in import-fix'i ekler (TableStatus → import). */
+function autoCorrectEnumLiterals(method: MethodDeclaration): string[] {
+  const body = method.getBody();
+  if (!body) return [];
+  const pending: { lit: Node; from: string; to: string }[] = [];
+  for (const lit of body.getDescendantsOfKind(SyntaxKind.StringLiteral)) {
+    let ctx;
+    try {
+      ctx = lit.getContextualType();
+    } catch {
+      continue;
+    }
+    if (!ctx) continue;
+    const en = ownedEnumDecl(ctx);
+    if (!en) continue;
+    const value = lit.getLiteralValue();
+    const members = en.getMembers();
+    const match =
+      members.find((m) => m.getName() === value) ??
+      singleOrNull(members.filter((m) => m.getName().toLowerCase() === value.toLowerCase())) ??
+      members.find((m) => String(m.getValue()) === value);
+    if (!match) continue;
+    pending.push({ lit, from: lit.getText(), to: `${en.getName()}.${match.getName()}` });
+  }
+  const fixed: string[] = [];
+  for (const p of pending) {
+    p.lit.replaceWithText(p.to);
+    fixed.push(`${p.from} -> ${p.to}`);
+  }
+  return fixed;
+}
+
 /** TİP-GİZLEYEN CAST yasağı (forbidden-moves geçidi). `x as any` / `x as unknown`
  *  hem kapalı-dünya üye denetimini (any/unknown ATLANIR — checkMemberAccess satır
  *  ~174) hem tsc'yi kör eder → AI var olmayan bir alana erişip (audit: `(user as
@@ -452,9 +518,10 @@ export function writeSurgicalBody(
   method.setBodyText([...markerLines, filledSig, "", bodyCode.trim()].join("\n"));
 
   // DETERMİNİSTİK SNAP (IntelliSense): owned-tip üye yakın-kaçırmalarını (user.id →
-  // user.Id) checkMemberAccess'TEN ÖNCE gerçek ada çevir. Tek-aday yoksa dokunmaz →
-  // checkMemberAccess yine ihlal verir. Snap'ler ihlal değildir; agent'a bilgi döner.
-  const corrections = autoCorrectMembers(method);
+  // user.Id) + owned-enum'a atanan string literal'leri ("AVAILABLE" → TableStatus.
+  // AVAILABLE) checkMemberAccess'TEN ÖNCE gerçek kimliğe çevir. Tek-aday yoksa dokunmaz.
+  // Snap'ler ihlal değildir; agent'a bilgi döner.
+  const corrections = [...autoCorrectMembers(method), ...autoCorrectEnumLiterals(method)];
 
   const re = readMethodMarker(method, injectedDeps(cls));
   // Sözleşme (deps/throws) + KAPALI-DÜNYA üye denetimi: gövde, ürettiğimiz tiplerin
