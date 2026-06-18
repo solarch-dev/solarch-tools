@@ -31,6 +31,9 @@ export const FILL_SYSTEM = [
   "their arity, enum members, exception constructors, DTO fields). Anything you reference must come from it;",
   "the type-checker will reject invented methods, wrong arity, or bad enum members and you will see those errors.",
   "Use async/await for Promise return types.",
+  "When the API surface marks a method as [generic] (it has a <T> type parameter), you MUST pass a concrete",
+  "type argument that matches what you return — e.g. `cache.get<Category>()` not `cache.get()`. A bare call",
+  "leaves T unresolved ({}), which the type-checker rejects.",
 ].join("\n");
 
 /** Tek bölgenin görev mesajı (ajan user turn'ü). */

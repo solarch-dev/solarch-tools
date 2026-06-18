@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { scanProject, summarizeSurgical } from "../src/index.js";
+import { readDeclaredSurface, scanProject, summarizeSurgical } from "../src/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ast-surgical-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -112,5 +112,29 @@ describe("surgical marker extraction", () => {
   it("özet sayaçları doğru toplar", () => {
     const summary = summarizeSurgical(svc!.surgical!);
     expect(summary).toEqual({ total: 3, filled: 2, skeletons: 1, filledAi: 1, violations: 1 });
+  });
+});
+
+describe("readDeclaredSurface — generic metot type-param'ı GÖSTERİR (fill parametrelesin)", () => {
+  const gdir = mkdtempSync(join(tmpdir(), "ast-surface-"));
+  afterAll(() => rmSync(gdir, { recursive: true, force: true }));
+  mkdirSync(join(gdir, "src"), { recursive: true });
+  writeFileSync(
+    join(gdir, "src", "thing.cache.ts"),
+    `export class ThingCache {\n  async get<T>(): Promise<T | null> { return null; }\n  async set<T>(value: T): Promise<void> {}\n  async del(): Promise<void> {}\n}\n`,
+  );
+  writeFileSync(
+    join(gdir, "src", "thing.service.ts"),
+    `import { ThingCache } from "./thing.cache";\nexport class ThingService {\n  constructor(private readonly cache: ThingCache) {}\n}\n`,
+  );
+
+  it("generic get<T> imzada `<T>` + [generic ...] hint ile görünür; çıplak değil", () => {
+    const surface = readDeclaredSurface(join(gdir, "src", "thing.service.ts"));
+    // Type-param görünür (eskiden `get(): Promise<T|null>` -> AI T'yi gizem sanıyordu).
+    expect(surface).toMatch(/get<T>\(\): Promise<T \| null>/);
+    expect(surface).toContain("[generic");
+    // del generic DEĞİL -> hint yok.
+    expect(surface).toMatch(/del\(\): Promise<void>/);
+    expect(surface).not.toMatch(/del<.*>\(/);
   });
 });

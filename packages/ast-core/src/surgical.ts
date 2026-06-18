@@ -497,12 +497,19 @@ function describeClass(cls: ClassDeclaration): string {
     .getMethods()
     .filter((m) => m.getScope() !== "private" && m.getScope() !== "protected")
     .map((m) => {
+      // GENERIC type param'ları (`<T>`) İMZADA göster — yoksa AI `get(): Promise<T|null>`'i
+      // görüp T'yi gizem sanır, çıplak `get()` çağırır → T={} → tsc TS2740 (gerçek bug:
+      // CategoryCache.get() Category yerine {} döndü). `<T>` + hint AI'a parametrelemeyi söyler.
+      const tps = m.getTypeParameters().map((tp) => tp.getText());
+      const generic = tps.length > 0 ? `<${tps.join(", ")}>` : "";
       const params = m.getParameters().map((p) => `${p.getName()}: ${cleanType(p.getTypeNode()?.getText() ?? "unknown")}`).join(", ");
       const ret = cleanType(m.getReturnTypeNode()?.getText() ?? "void");
       // RxJS dep'leri (örn. HttpService) Observable döner — AI'a unwrap'ı hatırlat
       // (Observable'da `.data` YOK; firstValueFrom/lastValueFrom gerekir).
       const obs = /\bObservable\s*</.test(ret) ? " [Observable — unwrap with firstValueFrom]" : "";
-      return `${m.getName()}(${params}): ${ret}${obs}`;
+      // Generic metot: tip argümanı VERİLMELİ (get<Category>()) yoksa T çözülmez.
+      const genericHint = generic ? ` [generic — pass a type argument matching what you return, e.g. ${m.getName()}<YourType>(...)]` : "";
+      return `${m.getName()}${generic}(${params}): ${ret}${obs}${genericHint}`;
     });
   const RELATION_DECOS = new Set(["ManyToOne", "OneToMany", "OneToOne", "ManyToMany"]);
   const fields = cls
