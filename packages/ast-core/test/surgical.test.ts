@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { completeType, readDeclaredSurface, readExpectedTypeHeaders, readProjectCatalog, scanProject, summarizeSurgical, tryFillSurgicalBody } from "../src/index.js";
+import { completeType, fixMissingImportsInFiles, readDeclaredSurface, readExpectedTypeHeaders, readProjectCatalog, scanProject, summarizeSurgical, tryFillSurgicalBody } from "../src/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ast-surgical-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -392,5 +392,37 @@ describe("diagnostics-in-loop — bölge-bazında tip teşhisi (checkTypes): 'Pr
     expect(r.ok).toBe(true);
     expect(r.violations ?? []).toHaveLength(0);
     expect(readFileSync(svcPath, "utf8")).toContain("const f = new Foo();");
+  });
+});
+
+describe("fixMissingImportsInFiles — isim çakışması: owned entity node_modules'a TERCİH edilir", () => {
+  const idir = mkdtempSync(join(tmpdir(), "ast-import-"));
+  afterAll(() => rmSync(idir, { recursive: true, force: true }));
+  mkdirSync(join(idir, "src", "like", "entities"), { recursive: true });
+  writeFileSync(
+    join(idir, "src", "like", "entities", "like.entity.ts"),
+    `export class Like {\n  userId!: string;\n  tweetId!: string;\n}\n`,
+  );
+  const svc = join(idir, "src", "like", "like.service.ts");
+  writeFileSync(
+    svc,
+    [
+      `import { Like } from "typeorm";`, // YANLIŞ kaynak — typeorm'un Like sorgu-operatörü (auto-import çakışması)
+      `export class LikeService {`,
+      `  make(): Like {`,
+      `    const l = new Like();`,
+      `    l.userId = "x";`,
+      `    return l;`,
+      `  }`,
+      `}`,
+      ``,
+    ].join("\n"),
+  );
+
+  it("`new Like()` → typeorm import'u sökülür, owned entity relatif import edilir (TS2554/TS7009 önlenir)", () => {
+    fixMissingImportsInFiles(idir, ["src/like/like.service.ts"]);
+    const out = readFileSync(svc, "utf8");
+    expect(out).not.toMatch(/from "typeorm"/); // yanlış kaynak gitti
+    expect(out).toMatch(/import \{ Like \} from "\.\/entities\/like\.entity"/); // owned relatif kazandı
   });
 });

@@ -28,7 +28,7 @@
 
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { ClassDeclaration, EnumDeclaration, MethodDeclaration, Node, Project, SyntaxKind, ts, Type } from "ts-morph";
+import { ClassDeclaration, EnumDeclaration, MethodDeclaration, Node, Project, SourceFile, SyntaxKind, ts, Type } from "ts-morph";
 
 export type SurgicalStatus = "skeleton" | "filled";
 export type FilledBy = "ai" | "human";
@@ -601,6 +601,18 @@ export function fixMissingImportsInFiles(rootDir: string, relFiles: string[]): {
     }
   }
   const srcRoot = resolve(rootDir, "src");
+  // İSİM ÇAKIŞMASI haritası: owned (src/) sınıf adı → bildirim dosyası. Auto-import,
+  // owned bir entity'yi (ör. `Like`) aynı adı export eden bir node_modules paketine
+  // (typeorm'un `Like` sorgu-operatörü) karşı tercih etmez → `new Like()` yanlış kaynağa
+  // bağlanır (TS2554/TS7009). Bu harita ile owned kaynağı geri kazanırız.
+  const ownedClassByName = new Map<string, SourceFile>();
+  for (const osf of project.getSourceFiles()) {
+    if (!/[/\\]src[/\\]/.test(osf.getFilePath())) continue;
+    for (const c of osf.getClasses()) {
+      const n = c.getName();
+      if (n && !ownedClassByName.has(n)) ownedClassByName.set(n, osf);
+    }
+  }
   const fixed: string[] = [];
   for (const rel of relFiles) {
     const sf = project.getSourceFile(resolve(rootDir, rel));
@@ -627,6 +639,36 @@ export function fixMissingImportsInFiles(rootDir: string, relFiles: string[]): {
         if (spec === "node:test" || spec === "@jest/globals") {
           imp.remove();
           continue;
+        }
+      }
+      // İSİM ÇAKIŞMASI: `new X()` hedefi owned bir sınıfsa (entity), owned kaynağı
+      // node_modules'a TERCİH et. `new` yalnız sınıfa uygulanır (operatör/fonksiyona
+      // değil) → güvenli sinyal. Yanlış node_modules import'unu sök + owned relatif ekle.
+      const newedNames = new Set<string>();
+      for (const ne of sf.getDescendantsOfKind(SyntaxKind.NewExpression)) {
+        const callee = ne.getExpression();
+        if (callee.getKind() === SyntaxKind.Identifier) newedNames.add(callee.getText());
+      }
+      for (const name of newedNames) {
+        const ownerSf = ownedClassByName.get(name);
+        if (!ownerSf || ownerSf === sf) continue; // owned değil ya da aynı dosyada → dokunma
+        let hasOwnedRel = false;
+        for (const imp of sf.getImportDeclarations()) {
+          const ni = imp.getNamedImports().find((n) => n.getName() === name);
+          if (!ni) continue;
+          const spec = imp.getModuleSpecifierValue();
+          if (spec.startsWith(".") && imp.getModuleSpecifierSourceFile() === ownerSf) {
+            hasOwnedRel = true; // doğru owned import zaten var
+            continue;
+          }
+          if (!spec.startsWith(".")) {
+            // node_modules'tan aynı isim → yanlış kaynak, sök.
+            if (imp.getNamedImports().length === 1 && !imp.getDefaultImport() && !imp.getNamespaceImport()) imp.remove();
+            else ni.remove();
+          }
+        }
+        if (!hasOwnedRel) {
+          sf.addImportDeclaration({ moduleSpecifier: sf.getRelativePathAsModuleSpecifierTo(ownerSf), namedImports: [name] });
         }
       }
       // Yeni import'lar GÖRELİ yolla eklensin (jest ts-jest baseUrl'i onurlandırmaz).
