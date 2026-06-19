@@ -5,6 +5,8 @@ export {
   readSurgicalMembers,
   readFillContext,
   readDeclaredSurface,
+  readExpectedTypeHeaders,
+  readProjectCatalog,
   completeType,
   fixMissingImportsInFiles,
   summarizeSurgical,

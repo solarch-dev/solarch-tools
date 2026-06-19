@@ -840,6 +840,114 @@ export function readDeclaredSurface(filePath: string): string {
   return blocks.join("\n");
 }
 
+/** ChatLSP "headers" (beklenen-tip grounding). Doldurulacak metodun ÜRETMESİ
+ *  (dönüş tipi) ve TÜKETMESİ (parametreler) gereken owned tiplerin GERÇEK yüzeyini
+ *  döndürür — Promise/Observable/Array sarmalı açılır, BİR sıçrama transitif (dönüş
+ *  DTO'sunun alanlarındaki owned tipler de). readDeclaredSurface yalnız dosyanın
+ *  import'larını verir; bu, "AuthResponseDto döndürmeliyim ama şekli ne?" boşluğunu
+ *  kapatır → model serbest-tahmin yerine gerçek alan adlarını görür (ChatLSP'nin en
+ *  yüksek-etkili sinyali: tip-header'ları test başarısını ~3x katlıyor). */
+export function readExpectedTypeHeaders(filePath: string, className: string, member: string): string {
+  const project = new Project({ skipAddingFilesFromTsConfig: true });
+  let sf;
+  try {
+    sf = project.addSourceFileAtPath(filePath);
+  } catch {
+    return "";
+  }
+  const method = sf.getClass(className)?.getMethod(member);
+  if (!method) return "";
+  const blocks: string[] = [];
+  const seen = new Set<string>();
+
+  const describeOwned = (t: Type, depth: number): void => {
+    if (depth > 1) return; // yalnız bir sıçrama transitif (gürültü/sonsuz döngü guard'ı)
+    let core = t.getNonNullableType();
+    if (core.isArray()) core = core.getArrayElementType() ?? core;
+    // Promise<T> / Observable<T> sarmalını aç → asıl payload tipi.
+    const symName = core.getSymbol()?.getName();
+    const targs = core.getTypeArguments();
+    if ((symName === "Promise" || symName === "Observable") && targs.length === 1) {
+      describeOwned(targs[0]!, depth);
+      return;
+    }
+    // Owned bildirimi ÖNCE çöz: bir enum, TS'de literal-union olarak temsil edilir
+    // (isUnion()=true) ama getSymbol() yine enum'a işaret eder — bu yüzden union/any
+    // guard'larından ÖNCE bakılır, yoksa enum parametreler elenir. Owned class/enum
+    // değilse (gerçek union / any / primitive / node_modules) sessizce atlanır.
+    const sym = core.getSymbol() ?? core.getAliasSymbol();
+    const ownDecl = (sym?.getDeclarations() ?? []).find((d) => /[/\\]src[/\\]/.test(d.getSourceFile().getFilePath()));
+    if (!ownDecl) return;
+    const name = sym!.getName();
+    if (seen.has(name)) return;
+    seen.add(name);
+    if (ownDecl.getKind() === SyntaxKind.ClassDeclaration) {
+      const cls = ownDecl as ClassDeclaration;
+      blocks.push(describeClass(cls));
+      for (const p of cls.getProperties()) {
+        try {
+          describeOwned(p.getType(), depth + 1); // transitif: alan tiplerini de aç
+        } catch {
+          /* çözülemedi → atla */
+        }
+      }
+    } else if (ownDecl.getKind() === SyntaxKind.EnumDeclaration) {
+      blocks.push(describeEnum(ownDecl as EnumDeclaration));
+    }
+    // Diğer (TypeParameter, Interface, TypeAlias) → describe edilmez; tsc'nin işi.
+  };
+
+  try {
+    describeOwned(method.getReturnType(), 0);
+  } catch {
+    /* atla */
+  }
+  for (const p of method.getParameters()) {
+    try {
+      describeOwned(p.getType(), 0);
+    } catch {
+      /* atla */
+    }
+  }
+  return blocks.join("\n");
+}
+
+/** Aider-tarzı repo-map (tüm-codebase farkındalığı). Projedeki TÜM owned (src/)
+ *  tiplerin SIKIŞIK kataloğu: sınıflar, enum'lar (üyeleriyle), exception'lar. Model
+ *  yalnız dosyanın import'larına değil, kod tabanının tamamına haberdar olur → ihtiyaç
+ *  duyduğu bir tipi `lookup_members` ile çekebilir. BİR KEZ kurulur (fillProject),
+ *  tüm bölgelere paylaşılır (per-bölge tüm src'yi yeniden yükleme maliyeti yok). */
+export function readProjectCatalog(rootDir: string): string {
+  const project = new Project({ skipAddingFilesFromTsConfig: true });
+  try {
+    project.addSourceFilesAtPaths(join(rootDir, "src/**/*.ts"));
+  } catch {
+    return "";
+  }
+  const classes = new Set<string>();
+  const enums = new Set<string>();
+  const exceptions = new Set<string>();
+  for (const sf of project.getSourceFiles()) {
+    if (/\.(spec|test)\.ts$/.test(sf.getFilePath())) continue;
+    for (const cls of sf.getClasses()) {
+      const n = cls.getName();
+      if (!n) continue;
+      const ext = cls.getExtends()?.getText() ?? "";
+      if (/Exception$/.test(n) || /Exception|Error/.test(ext)) exceptions.add(n);
+      else classes.add(n);
+    }
+    for (const en of sf.getEnums()) {
+      const n = en.getName();
+      if (n) enums.add(`${n}(${en.getMembers().map((m) => m.getName()).join("|")})`);
+    }
+  }
+  const parts: string[] = [];
+  if (classes.size) parts.push(`classes: ${[...classes].sort().join(", ")}`);
+  if (enums.size) parts.push(`enums: ${[...enums].sort().join(", ")}`);
+  if (exceptions.size) parts.push(`exceptions: ${[...exceptions].sort().join(", ")}`);
+  return parts.join("\n");
+}
+
 /** Dosyayı taze yükle, gövdeyi yaz, sözleşmeyi denetle; YALNIZ ihlal yoksa kaydet.
  *  Her çağrı bağımsızdır — başarısız bir deneme diske yazılmadığından sonraki
  *  denemeyi (taze yüklenen dosyayı) kirletmez. */

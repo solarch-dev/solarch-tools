@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { completeType, readDeclaredSurface, scanProject, summarizeSurgical, tryFillSurgicalBody } from "../src/index.js";
+import { completeType, readDeclaredSurface, readExpectedTypeHeaders, readProjectCatalog, scanProject, summarizeSurgical, tryFillSurgicalBody } from "../src/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ast-surgical-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -235,5 +235,85 @@ describe("completeType + autoCorrectMembers — IntelliSense üretici/snap (LLM'
     const out = readFileSync(svcPath, "utf8");
     expect(out).toContain("user.status = OrderStatus.PENDING");
     expect(out).not.toContain('user.status = "PENDING"');
+  });
+});
+
+describe("readExpectedTypeHeaders — ChatLSP 'headers': metodun ÜRETMESİ/TÜKETMESİ gereken tiplerin gerçek şekli", () => {
+  const hdir = mkdtempSync(join(tmpdir(), "ast-headers-"));
+  afterAll(() => rmSync(hdir, { recursive: true, force: true }));
+  mkdirSync(join(hdir, "src"), { recursive: true });
+  writeFileSync(
+    join(hdir, "src", "role.dto.ts"),
+    `export class RoleDto {\n  code!: string;\n  label!: string;\n}\n`,
+  );
+  writeFileSync(
+    join(hdir, "src", "account-status.enum.ts"),
+    `export enum AccountStatus {\n  ACTIVE = "active",\n  BANNED = "banned",\n}\n`,
+  );
+  writeFileSync(
+    join(hdir, "src", "profile.dto.ts"),
+    `import { RoleDto } from "./role.dto";\nexport class ProfileDto {\n  Id!: string;\n  displayName!: string;\n  role!: RoleDto;\n}\n`,
+  );
+  const svcPath = join(hdir, "src", "account.service.ts");
+  writeFileSync(
+    svcPath,
+    [
+      `import { ProfileDto } from "./profile.dto";`,
+      `import { AccountStatus } from "./account-status.enum";`,
+      ``,
+      `export class AccountService {`,
+      `  async getProfile(status: AccountStatus): Promise<ProfileDto> {`,
+      `    // @solarch:surgical id=hhhh1111-2222-3333-4444-555566667777#getProfile`,
+      `    throw new Error("NOT_IMPLEMENTED: AccountService.getProfile");`,
+      `  }`,
+      ``,
+      `  async ping(): Promise<void> {`,
+      `    // @solarch:surgical id=hhhh1111-2222-3333-4444-555566667778#ping`,
+      `    throw new Error("NOT_IMPLEMENTED: AccountService.ping");`,
+      `  }`,
+      `}`,
+      ``,
+    ].join("\n"),
+  );
+
+  it("dönüş tipini (Promise<ProfileDto>) sarmalı açıp GERÇEK alanlarıyla verir", () => {
+    const h = readExpectedTypeHeaders(svcPath, "AccountService", "getProfile");
+    expect(h).toContain("class ProfileDto");
+    expect(h).toContain("displayName");
+  });
+
+  it("BİR sıçrama transitif: ProfileDto.role -> RoleDto'nun alanlarını da getirir", () => {
+    const h = readExpectedTypeHeaders(svcPath, "AccountService", "getProfile");
+    expect(h).toContain("class RoleDto");
+    expect(h).toMatch(/code.*label|label.*code/s);
+  });
+
+  it("parametre tipini (owned enum) describe eder", () => {
+    const h = readExpectedTypeHeaders(svcPath, "AccountService", "getProfile");
+    expect(h).toContain("enum AccountStatus");
+  });
+
+  it("dönüş/param owned değilse (Promise<void>) boş döner", () => {
+    expect(readExpectedTypeHeaders(svcPath, "AccountService", "ping").trim()).toBe("");
+  });
+});
+
+describe("readProjectCatalog — Aider repo-map: projedeki TÜM owned tipler (whole-codebase farkındalığı)", () => {
+  const pdir = mkdtempSync(join(tmpdir(), "ast-catalog-"));
+  afterAll(() => rmSync(pdir, { recursive: true, force: true }));
+  mkdirSync(join(pdir, "src"), { recursive: true });
+  writeFileSync(join(pdir, "src", "user.entity.ts"), `export class User {\n  Id!: string;\n}\n`);
+  writeFileSync(join(pdir, "src", "order.entity.ts"), `export class Order {\n  Id!: string;\n}\n`);
+  writeFileSync(join(pdir, "src", "order-status.enum.ts"), `export enum OrderStatus {\n  NEW = "new",\n  DONE = "done",\n}\n`);
+  writeFileSync(join(pdir, "src", "not-found.exception.ts"), `export class NotFoundException extends Error {}\n`);
+
+  it("sınıfları, enum'ları ve exception'ları ayrı ayrı listeler", () => {
+    const cat = readProjectCatalog(pdir);
+    expect(cat).toMatch(/classes:.*\bUser\b/);
+    expect(cat).toMatch(/classes:.*\bOrder\b/);
+    expect(cat).toMatch(/enums:.*OrderStatus/);
+    expect(cat).toMatch(/exceptions:.*NotFoundException/);
+    // exception class'lar genel "classes" listesine düşmez
+    expect(cat).not.toMatch(/classes:[^\n]*NotFoundException/);
   });
 });

@@ -24,7 +24,7 @@
  *  Not built; the closed-world member set is already computed for the two paths above. */
 
 import { join } from "node:path";
-import { completeType, fixMissingImportsInFiles, readDeclaredSurface, readFillContext, tryFillSurgicalBody, type SurgicalMember } from "@solarch/ast-core";
+import { completeType, fixMissingImportsInFiles, readDeclaredSurface, readExpectedTypeHeaders, readFillContext, readProjectCatalog, tryFillSurgicalBody, type SurgicalMember } from "@solarch/ast-core";
 import { runScan } from "../commands/scan.js";
 import { FILL_SYSTEM, buildFillUser } from "./prompt.js";
 import { stripCodeFences, type LlmConfig } from "./llm.js";
@@ -124,6 +124,10 @@ export interface FillOptions {
   /** Eşzamanlı doldurulacak DOSYA sayısı (varsayılan 1 = sıralı). Aynı dosyanın
    *  bölgeleri her zaman tek worker'da sıralı kalır (ts-morph saveSync race'i yok). */
   concurrency?: number;
+  /** Projedeki tüm owned tiplerin kataloğu (whole-codebase farkındalığı). fillProject
+   *  BİR KEZ kurar (readProjectCatalog) ve tüm bölge işlerine taşır — her fillRegion
+   *  tüm src'yi yeniden yüklemesin. Tek-bölge çağrılarında boş kalabilir. */
+  projectCatalog?: string;
   /** Bölge tamamlandığında çağrılır (ilerleme). */
   onProgress?: (r: FillRegionResult) => void;
   /** Doğrulama/onarım fazı ilerlemesi (proje geneli) — opsiyonel. */
@@ -182,8 +186,16 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
 
   const parts = readFillContext(filePath, target.className, target.member.member);
   if (!parts) return { ...base, status: "error", attempts: 0, error: `region not found in ${target.file}` };
-  // Grounding: import edilen tiplerin gerçek API yüzeyi (zemin gerçeği; tsc dayatır).
-  const ctx = { className: target.className, ...parts, apiSurface: readDeclaredSurface(filePath) };
+  // Grounding (whole-codebase farkındalığı): (1) dosyanın import yüzeyi, (2) ChatLSP
+  // "headers" — metodun üretmesi/tüketmesi gereken tiplerin gerçek şekli (dönüş+param,
+  // transitif), (3) Aider repo-map — projenin tüm owned tip kataloğu (lookup_members için).
+  const ctx = {
+    className: target.className,
+    ...parts,
+    apiSurface: readDeclaredSurface(filePath),
+    expectedTypes: readExpectedTypeHeaders(filePath, target.className, target.member.member),
+    catalog: opts.projectCatalog ?? readProjectCatalog(opts.rootDir),
+  };
 
   let lastViolations: string[] | undefined;
   let toolError: string | undefined;
@@ -251,6 +263,9 @@ function tscErrorsByFile(rootDir: string, output: string): Map<string, string[]>
 
 /** Tüm seçili iskeletleri doldur → tsc-repair turları → test geçidi. */
 export async function fillProject(opts: FillOptions): Promise<FillReport> {
+  // Proje tip kataloğunu BİR KEZ kur (whole-codebase farkındalığı) → tüm bölgelere
+  // taşı; her fillRegion src'yi yeniden yüklemesin (per-bölge maliyet yok).
+  opts = { ...opts, projectCatalog: opts.projectCatalog ?? readProjectCatalog(opts.rootDir) };
   const targets = selectSkeletons(opts.rootDir, opts.region);
   const byKey = new Map<string, RegionTarget>();
   for (const t of targets) byKey.set(`${t.file}#${t.member.member}`, t);

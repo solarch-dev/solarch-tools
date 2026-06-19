@@ -19,6 +19,12 @@ export interface FillContext {
   /** Çağrılabilir API yüzeyi — import edilen tiplerin gerçek metod/arity/enum-üye
    *  imzaları. Halüsinasyonu tsc yakalar; bu yalnız zemin gerçeğini verir. */
   apiSurface?: string;
+  /** ChatLSP "headers": bu metodun ÜRETMESİ/TÜKETMESİ gereken tiplerin (dönüş +
+   *  parametre, transitif) gerçek alan adları/şekli. "Ne döndürmeliyim?" boşluğunu kapatır. */
+  expectedTypes?: string;
+  /** Aider repo-map: projedeki TÜM owned tiplerin sıkışık kataloğu (whole-codebase
+   *  farkındalığı). Model dosyanın import'ları dışındaki bir tipi lookup_members ile çeker. */
+  catalog?: string;
 }
 
 export const FILL_SYSTEM = [
@@ -46,6 +52,14 @@ export function buildFillUser(region: SurgicalMember, ctx: FillContext, feedback
     "",
     "API surface — the methods / enum members / exception constructors / DTO fields that exist:",
     ctx.apiSurface || "(none resolved — call nothing you cannot see here)",
+    "",
+    "Expected types — the EXACT shapes this method must PRODUCE (return) and CONSUME (params).",
+    "Use these field names verbatim; if you build the return value, set exactly these fields:",
+    ctx.expectedTypes || "(return/params are primitives or third-party — nothing owned to match)",
+    "",
+    "Project type catalog — every owned type in this codebase. If you need one that is not shown above,",
+    "call lookup_members(<name>) to get its exact members before referencing it (never guess across files):",
+    ctx.catalog || "(unavailable)",
     "",
     "Imports in scope:",
     ctx.imports || "(none)",
