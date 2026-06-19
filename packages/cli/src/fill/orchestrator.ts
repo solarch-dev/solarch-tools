@@ -211,7 +211,13 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
     const code = typeof call.args?.code === "string" ? call.args.code.trim() : "";
     if (!code) return { content: JSON.stringify({ ok: false, violations: ["empty code — pass the method body statements in `code`"] }) };
     const body = stripCodeFences(code);
-    const res = tryFillSurgicalBody(filePath, target.className, target.member.member, body, new Date().toISOString());
+    // checkTypes: bölge-bazında tip teşhisi (diagnostics-in-loop) — AST temizse dil-
+    // servisiyle cast/null/yanlış-dönüş/arity'yi ANINDA denetle; model kendi bölgesini
+    // tam bağlamla gördüğü bu döngüde düzeltsin (tsc'nin sondaki topluca turunu beklemeden).
+    const res = tryFillSurgicalBody(filePath, target.className, target.member.member, body, new Date().toISOString(), {
+      rootDir: opts.rootDir,
+      checkTypes: true,
+    });
     if (!res.ok) {
       toolError = res.error;
       return { content: JSON.stringify({ ok: false, violations: [res.error] }) };

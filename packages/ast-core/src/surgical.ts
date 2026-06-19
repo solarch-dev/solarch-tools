@@ -351,6 +351,43 @@ function checkForbiddenCasts(method: MethodDeclaration): string[] {
   return violations;
 }
 
+/** BÖLGE-BAZINDA TİP TEŞHİSLERİ (diagnostics-in-loop — "Problems paneli"). Dolan
+ *  metodun gövdesini, tsc'yi EN SONDA topluca koşmak yerine, dil-servisiyle ANINDA
+ *  tip-denetler ve YALNIZ bu metodun satır aralığındaki semantik hataları döndürür
+ *  (cast/null-safety/yanlış-dönüş/arity — AST geçitlerinin kaçırdığı tip sınıfı).
+ *  Dosyanın import'ları dil-servisi tarafından diskten tembel çözülür; kayıt yapılmaz
+ *  (in-memory gövde denetlenir). "Cannot find name" ELENİR: o, eksik import'tur ve
+ *  fixMissingImportsInFiles kapatır — AI yalnız gövde yazar, import ekleyemez.
+ *
+ *  Strict-null gibi gerçek-tsc kurallarının yansıması için, çağıran (tryFillSurgicalBody)
+ *  Project'i projenin tsconfig DERLEYİCİ SEÇENEKLERİYLE kurmalı; aksi halde gevşek
+ *  varsayılanlar null-safety'yi kaçırır. */
+export function methodTypeDiagnostics(method: MethodDeclaration): string[] {
+  const sf = method.getSourceFile();
+  const start = method.getStartLineNumber();
+  const end = method.getEndLineNumber();
+  let diags: readonly ts.Diagnostic[];
+  try {
+    diags = sf.getProject().getLanguageService().compilerObject.getSemanticDiagnostics(sf.getFilePath());
+  } catch {
+    return []; // dil-servisi çözemezse güvenli atla (tsc son geçit yine koşar)
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const d of diags) {
+    if (d.start == null || !d.file) continue;
+    const msg = ts.flattenDiagnosticMessageText(d.messageText, " ");
+    if (/Cannot find name/.test(msg)) continue; // eksik import → import-fix'in işi
+    const line = d.file.getLineAndCharacterOfPosition(d.start).line + 1;
+    if (line < start || line > end) continue; // yalnız bu metodun aralığı
+    const key = `${d.code}:${msg}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(`type error (TS${d.code}): ${msg}`);
+  }
+  return out;
+}
+
 /* ── işaret okuma ────────────────────────────────────────────────── */
 
 /** Tek metodun gövdesinden işaret çıkar — işaret yoksa null. */
@@ -484,6 +521,7 @@ export function writeSurgicalBody(
   member: string,
   bodyCode: string,
   filledAtIso: string,
+  checkTypes = false,
 ): WriteBodyResult {
   const method = cls.getMethods().find((m) => {
     const txt = m.getBody()?.getFullText() ?? "";
@@ -531,6 +569,13 @@ export function writeSurgicalBody(
     ...checkMemberAccess(method),
     ...checkForbiddenCasts(method),
   ];
+  // DIAGNOSTICS-IN-LOOP: AST geçitleri temizse, dil-servisiyle bölge-bazında tip-denetle
+  // (cast/null-safety/yanlış-dönüş/arity). Hatayı tsc'nin EN SONDAKİ topluca turuna
+  // bırakmak yerine, model kendi bölgesini tam bağlamla GÖRDÜĞÜ döngüde düzeltsin. AST
+  // ihlali varken koşmaz (çift-raporlama/kaskad gürültüsü olmasın — önce onları düzelt).
+  if (checkTypes && violations.length === 0) {
+    violations.push(...methodTypeDiagnostics(method));
+  }
   return {
     ok: true,
     member,
@@ -951,14 +996,30 @@ export function readProjectCatalog(rootDir: string): string {
 /** Dosyayı taze yükle, gövdeyi yaz, sözleşmeyi denetle; YALNIZ ihlal yoksa kaydet.
  *  Her çağrı bağımsızdır — başarısız bir deneme diske yazılmadığından sonraki
  *  denemeyi (taze yüklenen dosyayı) kirletmez. */
+export interface TryFillOptions {
+  /** Proje kökü — checkTypes için tsconfig DERLEYİCİ SEÇENEKLERİNİ (strict vb.) yükler
+   *  ki bölge-bazında teşhisler gerçek tsc ile aynı olsun (null-safety kaçmasın). */
+  rootDir?: string;
+  /** Bölge-bazında tip teşhisleri AÇ (diagnostics-in-loop). AST temizse dil-servisiyle
+   *  cast/null/yanlış-dönüş/arity denetle; hata varsa kaydetme → model döngüde düzeltir. */
+  checkTypes?: boolean;
+}
+
 export function tryFillSurgicalBody(
   filePath: string,
   className: string,
   member: string,
   bodyCode: string,
   filledAtIso: string,
+  opts?: TryFillOptions,
 ): WriteBodyResult {
-  const project = new Project({ skipAddingFilesFromTsConfig: true });
+  // checkTypes: Project'i projenin tsconfig DERLEYİCİ SEÇENEKLERİYLE kur (skipAdding…
+  // → tüm dosyaları yüklemeden; import'lar tembel çözülür) ki teşhisler strict olsun.
+  const tsconfig = opts?.rootDir ? join(opts.rootDir, "tsconfig.json") : null;
+  const project =
+    opts?.checkTypes && tsconfig && existsSync(tsconfig)
+      ? new Project({ tsConfigFilePath: tsconfig, skipAddingFilesFromTsConfig: true })
+      : new Project({ skipAddingFilesFromTsConfig: true });
   let sf;
   try {
     sf = project.addSourceFileAtPath(filePath);
@@ -967,7 +1028,7 @@ export function tryFillSurgicalBody(
   }
   const cls = sf.getClass(className);
   if (!cls) return { ok: false, member, error: `class ${className} not found in ${filePath}` };
-  const res = writeSurgicalBody(cls, member, bodyCode, filledAtIso);
+  const res = writeSurgicalBody(cls, member, bodyCode, filledAtIso, opts?.checkTypes ?? false);
   if (res.ok && (res.violations?.length ?? 0) === 0) sf.saveSync();
   return res;
 }

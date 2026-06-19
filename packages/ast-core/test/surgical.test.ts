@@ -317,3 +317,80 @@ describe("readProjectCatalog — Aider repo-map: projedeki TÜM owned tipler (wh
     expect(cat).not.toMatch(/classes:[^\n]*NotFoundException/);
   });
 });
+
+describe("diagnostics-in-loop — bölge-bazında tip teşhisi (checkTypes): 'Problems paneli' döngüde", () => {
+  const ddir = mkdtempSync(join(tmpdir(), "ast-diag-"));
+  afterAll(() => rmSync(ddir, { recursive: true, force: true }));
+  mkdirSync(join(ddir, "src"), { recursive: true });
+  // Strict tsconfig — bölge teşhisleri gerçek tsc ile aynı olsun (null-safety yakalansın).
+  writeFileSync(
+    join(ddir, "tsconfig.json"),
+    JSON.stringify({ compilerOptions: { target: "ES2022", module: "commonjs", strict: true, skipLibCheck: true } }),
+  );
+  writeFileSync(join(ddir, "src", "user.entity.ts"), `export class User {\n  name!: string;\n}\n`);
+  writeFileSync(join(ddir, "src", "foo.entity.ts"), `export class Foo {\n  n!: number;\n}\n`);
+  const svcPath = join(ddir, "src", "stats.service.ts");
+  const SKEL = [
+    `import { User } from "./user.entity";`,
+    ``,
+    `export class StatsService {`,
+    `  async getCount(): Promise<number> {`,
+    `    // @solarch:surgical id=dddd1111-2222-3333-4444-555566660001#getCount`,
+    `    throw new Error("NOT_IMPLEMENTED: StatsService.getCount");`,
+    `  }`,
+    ``,
+    `  nameOf(u: User | null): string {`,
+    `    // @solarch:surgical id=dddd1111-2222-3333-4444-555566660002#nameOf`,
+    `    throw new Error("NOT_IMPLEMENTED: StatsService.nameOf");`,
+    `  }`,
+    ``,
+    `  async compute(): Promise<number> {`,
+    `    // @solarch:surgical id=dddd1111-2222-3333-4444-555566660003#compute`,
+    `    throw new Error("NOT_IMPLEMENTED: StatsService.compute");`,
+    `  }`,
+    `}`,
+    ``,
+  ].join("\n");
+  const reset = () => writeFileSync(svcPath, SKEL);
+  const iso = "2026-06-19T00:00:00Z";
+
+  it("YANLIŞ DÖNÜŞ tipi (Promise<number>'a string) → tip-hatası ihlali + KAYDEDİLMEZ", () => {
+    reset();
+    const r = tryFillSurgicalBody(svcPath, "StatsService", "getCount", `return "five";`, iso, { rootDir: ddir, checkTypes: true });
+    expect(r.ok).toBe(true);
+    expect((r.violations ?? []).some((v) => /type error/.test(v))).toBe(true);
+    expect(readFileSync(svcPath, "utf8")).toContain("NOT_IMPLEMENTED: StatsService.getCount"); // kaydedilmedi
+  });
+
+  it("DOĞRU dönüş (return 5) → ihlal yok, KAYDEDİLİR", () => {
+    reset();
+    const r = tryFillSurgicalBody(svcPath, "StatsService", "getCount", `return 5;`, iso, { rootDir: ddir, checkTypes: true });
+    expect(r.ok).toBe(true);
+    expect(r.violations ?? []).toHaveLength(0);
+    expect(readFileSync(svcPath, "utf8")).toContain("return 5;");
+  });
+
+  it("STRICT NULL (u possibly null) → tip-hatası ihlali + KAYDEDİLMEZ (tsconfig strict yüklendi)", () => {
+    reset();
+    const r = tryFillSurgicalBody(svcPath, "StatsService", "nameOf", `return u.name;`, iso, { rootDir: ddir, checkTypes: true });
+    expect(r.ok).toBe(true);
+    expect((r.violations ?? []).some((v) => /type error/.test(v))).toBe(true);
+    expect(readFileSync(svcPath, "utf8")).toContain("NOT_IMPLEMENTED: StatsService.nameOf");
+  });
+
+  it("checkTypes KAPALI → aynı null-unsafe gövde tip-denetlenmez (opt-in kanıtı)", () => {
+    reset();
+    const r = tryFillSurgicalBody(svcPath, "StatsService", "nameOf", `return u.name;`, iso, { rootDir: ddir, checkTypes: false });
+    expect(r.ok).toBe(true);
+    expect(r.violations ?? []).toHaveLength(0); // AST geçer, tip-denetim kapalı
+  });
+
+  it("'Cannot find name' (import edilmemiş owned tip) BLOKLAMAZ → import-fix'in işi, kaydedilir", () => {
+    reset();
+    // `new Foo()` → Foo import edilmemiş → TS2304 Cannot find name (elenir); return 5 doğru → kaydedilir.
+    const r = tryFillSurgicalBody(svcPath, "StatsService", "compute", `const f = new Foo(); return 5;`, iso, { rootDir: ddir, checkTypes: true });
+    expect(r.ok).toBe(true);
+    expect(r.violations ?? []).toHaveLength(0);
+    expect(readFileSync(svcPath, "utf8")).toContain("const f = new Foo();");
+  });
+});
