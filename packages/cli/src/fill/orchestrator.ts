@@ -24,7 +24,7 @@
  *  Not built; the closed-world member set is already computed for the two paths above. */
 
 import { join } from "node:path";
-import { completeType, fixMissingImportsInFiles, readDeclaredSurface, readExpectedTypeHeaders, readFillContext, readProjectCatalog, tryFillSurgicalBody, type SurgicalMember } from "@solarch/ast-core";
+import { completeType, DiagnosticsPool, readDeclaredSurface, readExpectedTypeHeaders, readFillContext, readProjectCatalog, tryFillSurgicalBody, type SurgicalMember, type WriteBodyResult } from "@solarch/ast-core";
 import { runScan } from "../commands/scan.js";
 import { FILL_SYSTEM, buildFillUser } from "./prompt.js";
 import { stripCodeFences, type LlmConfig } from "./llm.js";
@@ -181,6 +181,39 @@ export function selectSkeletons(rootDir: string, region?: string): RegionTarget[
  *  yükler → başarısız deneme stub'ı bozmaz). Ajan yeşile (ok) ya da tur-tavanına
  *  kadar döner. `feedback` (önceki tsc/kontrat turu) ajanın ilk mesajına tohumlanır. */
 export async function fillRegion(target: RegionTarget, opts: FillOptions, feedback?: string[]): Promise<FillRegionResult> {
+  const filePath = join(opts.rootDir, target.file);
+  // İlk dolum: doğrulama arka ucu tryFillSurgicalBody (her çağrı TAZE proje + checkTypes
+  // → başarısız deneme stub'ı bozmaz; ilk pas paralel olduğu için izole proje gerekli).
+  return runRegionAgent(target, opts, feedback, (body) =>
+    tryFillSurgicalBody(filePath, target.className, target.member.member, body, new Date().toISOString(), {
+      rootDir: opts.rootDir,
+      checkTypes: true,
+    }),
+  );
+}
+
+/** Onarım yolu: doğrulama arka ucu DiagnosticsPool (TEK SICAK program). Gövde belleğe
+ *  uygulanır + warm LS ile artımsal denetlenir; her tur yeni soğuk proje/tsc YOK. */
+async function repairRegionInPool(
+  target: RegionTarget,
+  opts: FillOptions,
+  pool: DiagnosticsPool,
+  feedback: string[],
+): Promise<FillRegionResult> {
+  return runRegionAgent(target, opts, feedback, (body) =>
+    pool.applyBody(target.file, target.className, target.member.member, body, new Date().toISOString()),
+  );
+}
+
+/** Bölge doldurma AJAN ÇEKİRDEĞİ — grounding + tool-calling loop TEK kaynaktan. `apply`
+ *  doğrulama arka ucunu soyutlar (ilk dolum: taze proje; onarım: sıcak havuz) → grounding,
+ *  lookup_members, feedback, sonuç-eşleme her iki yolda aynı kalır. */
+async function runRegionAgent(
+  target: RegionTarget,
+  opts: FillOptions,
+  feedback: string[] | undefined,
+  apply: (body: string) => WriteBodyResult,
+): Promise<FillRegionResult> {
   const base = { nodeId: target.nodeId, member: target.member.member, file: target.file };
   const filePath = join(opts.rootDir, target.file);
 
@@ -199,7 +232,7 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
 
   let lastViolations: string[] | undefined;
   let toolError: string | undefined;
-  let filledBody: string | undefined; // diske yazılan doğrulanmış gövde (kalıcı sakla)
+  let filledBody: string | undefined; // doğrulanmış gövde (kalıcı sakla)
   const resolve: ToolResolver = async (call) => {
     // lookup_members (IntelliSense, salt-okunur): GERÇEK üyeleri döndür, loop devam eder.
     if (call.name === "lookup_members") {
@@ -207,17 +240,11 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
       if (!typeName) return { content: JSON.stringify({ error: "pass an owned type name in `type`" }) };
       return { content: JSON.stringify(completeType(filePath, typeName)) };
     }
-    // verify_fill (varsayılan): doğrula + temizse commit.
+    // verify_fill (varsayılan): doğrula (apply) + temizse commit.
     const code = typeof call.args?.code === "string" ? call.args.code.trim() : "";
     if (!code) return { content: JSON.stringify({ ok: false, violations: ["empty code — pass the method body statements in `code`"] }) };
     const body = stripCodeFences(code);
-    // checkTypes: bölge-bazında tip teşhisi (diagnostics-in-loop) — AST temizse dil-
-    // servisiyle cast/null/yanlış-dönüş/arity'yi ANINDA denetle; model kendi bölgesini
-    // tam bağlamla gördüğü bu döngüde düzeltsin (tsc'nin sondaki topluca turunu beklemeden).
-    const res = tryFillSurgicalBody(filePath, target.className, target.member.member, body, new Date().toISOString(), {
-      rootDir: opts.rootDir,
-      checkTypes: true,
-    });
+    const res = apply(body);
     if (!res.ok) {
       toolError = res.error;
       return { content: JSON.stringify({ ok: false, violations: [res.error] }) };
@@ -225,7 +252,6 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
     // Deterministik snap'leri (user.id -> user.Id) agent'a BİLGİ olarak ekle (ihlal değil).
     const corrected = res.corrections && res.corrections.length > 0 ? { corrected: res.corrections } : {};
     if ((res.violations?.length ?? 0) === 0) {
-      // Snap SONRASI gövdeyi sakla (disk düzeltilmiş; re-inject'te de doğru kalsın).
       filledBody = (res.body ?? body).trim();
       return { content: JSON.stringify({ ok: true, ...corrected }), done: true, result: true };
     }
@@ -251,20 +277,8 @@ export async function fillRegion(target: RegionTarget, opts: FillOptions, feedba
 
   if (agent.result === true) return { ...base, status: "filled", attempts: agent.rounds, body: filledBody };
   if (toolError && !lastViolations) return { ...base, status: "error", attempts: agent.rounds, error: toolError };
-  // Yeşile ulaşamadı → ast-core kaydetmedi (disk hâlâ iskelet stub).
+  // Yeşile ulaşamadı → commit edilmedi (disk/havuz önceki gövdeyi tutar).
   return { ...base, status: "violation", attempts: agent.rounds, violations: lastViolations };
-}
-
-/** tsc --noEmit çıktısını dosya yoluna göre hatalara böl (göreli yola normalize). */
-function tscErrorsByFile(rootDir: string, output: string): Map<string, string[]> {
-  const byFile = new Map<string, string[]>();
-  for (const line of output.split("\n")) {
-    const m = /^(.+?\.ts)\(\d+,\d+\):\s*(error.*)$/.exec(line.trim());
-    if (!m) continue;
-    const rel = m[1]!.replace(`${rootDir}/`, "").replace(/^\.\//, "");
-    (byFile.get(rel) ?? byFile.set(rel, []).get(rel)!).push(m[2]!.trim());
-  }
-  return byFile;
 }
 
 /** Tüm seçili iskeletleri doldur → tsc-repair turları → test geçidi. */
@@ -287,70 +301,63 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
     },
   );
 
-  // Dolan gövdeler yerel tip kullanıp import ekleyemez → eksik import'ları topluca ekle.
+  // Dolan gövdeler yerel tip kullanıp import ekleyemez (yalnız gövde yazılır).
   const filledFiles = [...new Set([...results.values()].filter((r) => r.status === "filled").map((r) => r.file))];
+
+  // ── REPAIR FAZI — TEK SICAK HAVUZ (DiagnosticsPool) ─────────────────────────
+  // Eskiden her tur SOĞUKTAN: tsc spawn (tüm proje + node_modules baştan) + tam
+  // fixMissingImports yükleme + paralel per-bölge tip-denetimi → CPU spike. Artık
+  // projeyi BİR KEZ yükleyen tek sıcak programdan okuyup, düzeltmeleri belleğe yazıp
+  // ARTIMSAL yeniden okuyoruz (yalnız değişen dosya + bağımlıları yeniden bağlanır).
+  let typecheck: VerifyResult | undefined;
   if (filledFiles.length > 0) {
-    try {
-      fixMissingImportsInFiles(opts.rootDir, filledFiles);
-    } catch {
-      /* en iyi çaba */
-    }
+    const pool = new DiagnosticsPool(opts.rootDir);
+    pool.fixImports(filledFiles); // import-fix sıcak programda (reload/save yok)
     opts.onPhase?.({ kind: "imports", files: filledFiles.length });
+
+    if (!opts.skipVerify) {
+      const maxRepairRounds = 3;
+      let prevCount = Infinity;
+      for (let round = 1; round <= maxRepairRounds; round++) {
+        // HAVUZ: yalnız DOLU surgical bölgelere düşen sorunlar düzeltilebilir; bölge-dışı
+        // (entity codegen bug'ı) raporlanır, fill'in işi değil. İlk okuma tam, sonra artımsal.
+        const regionProblems = pool
+          .problemsByRegion()
+          .filter((rp) => results.get(`${rp.file}#${rp.member}`)?.status === "filled");
+        const count = regionProblems.reduce((n, rp) => n + rp.problems.length, 0);
+        opts.onPhase?.({ kind: "verify", round, ok: count === 0, errorCount: count });
+        if (count === 0) break;
+        if (count >= prevCount) break; // küçülmüyor → thrash'i durdur
+        prevCount = count;
+
+        // Bölgeleri SIRAYLA onar: tek sıcak program tek-iş parçacıklı → paralel
+        // tip-denetleyici spike'ı YOK. Her düzeltme belleğe commit + sonraki okuma görür.
+        const changed = new Set<string>();
+        for (const rp of regionProblems) {
+          const target = byKey.get(`${rp.file}#${rp.member}`);
+          if (!target) continue;
+          const feedback = [
+            `tsc errors in ${rp.file} — fix your method so the file compiles:`,
+            ...rp.problems.slice(0, 12).map((p) => `${p.message} (TS${p.code})`),
+          ];
+          const rr = await repairRegionInPool(target, opts, pool, feedback);
+          results.set(`${rp.file}#${rp.member}`, rr);
+          changed.add(rp.file);
+          opts.onPhase?.({ kind: "repair", round, file: rr.file, member: rr.member });
+          opts.onProgress?.(rr);
+        }
+        pool.fixImports([...changed]); // bu turun düzeltmeleri yeni yerel tip kullanmış olabilir
+      }
+    }
+    pool.save(); // kirli dosyaları diske yaz (yalnız değişenler — ucuz I/O, type-check değil)
   }
 
-  // Katman 3 — tsc onarım döngüsü: tsc patlarsa, hatalı dosyadaki dolu bölgeleri
-  // o dosyanın derleyici hatalarını geri besleyerek yeniden doldur. ≤3 tur
-  // (gerçek projede her tur hatayı ~yarıya indiriyor: 21→8→3→~0).
-  let typecheck: VerifyResult | undefined;
-  const maxRepairRounds = opts.skipVerify ? 0 : 3;
-  let lastRepaired = 0;
-  for (let round = 1; round <= maxRepairRounds; round++) {
-    // ÖNCE eksik import'ları ekle: önceki turun yeniden-dolumları yeni yerel tip
-    // (enum/entity) kullanmış olabilir; AI import ekleyemez (yalnız gövde yazar) →
-    // bunu dil servisi yapar. Aksi halde TS2304 deterministik olmayan şekilde kalır.
-    try {
-      fixMissingImportsInFiles(opts.rootDir, filledFiles);
-    } catch {
-      /* en iyi çaba */
-    }
+  // FINAL OTORİTER GEÇİT — bir kez gerçek tsc (ts-morph/tsc parite farkını mühürler;
+  // bölge-dışı codegen hatalarını da rapora taşır). report.typecheck bunu yeniden kullanır.
+  if (!opts.skipVerify) {
     typecheck = runTypecheck(opts.rootDir);
     const errorCount = (typecheck.output.match(/error TS/g) ?? []).length;
-    opts.onPhase?.({ kind: "verify", round, ok: typecheck.ok, errorCount });
-    lastRepaired = 0;
-    if (typecheck.ok) break;
-    const errsByFile = tscErrorsByFile(opts.rootDir, typecheck.output);
-    // Onarılacak işleri topla: yalnız başarılı dolumlar + (import-dışı) tsc hatası olan dosyalar.
-    const repairJobs: { target: RegionTarget; feedback: string[] }[] = [];
-    for (const [key, t] of byKey) {
-      const r = results.get(key);
-      if (r?.status !== "filled") continue;
-      // Import hatalarını (TS2304 Cannot find name) AI'a VERME — onları import-fix
-      // kapatır; AI'a vermek boşa tur (gövde yazar, import ekleyemez).
-      const fileErrs = (errsByFile.get(t.file) ?? []).filter((e) => !/Cannot find name/.test(e));
-      if (fileErrs.length === 0) continue;
-      repairJobs.push({ target: t, feedback: [`tsc errors in ${t.file} — fix your method so the file compiles:`, ...fileErrs.slice(0, 12)] });
-    }
-    if (repairJobs.length === 0) break; // düzeltilebilir (import-dışı) hata kalmadı
-    // Onarımlar da dosya-bazında paralel.
-    await runFillJobs(repairJobs, opts, (key, rr) => {
-      results.set(key, rr);
-      opts.onPhase?.({ kind: "repair", round, file: rr.file, member: rr.member });
-      // Region event TEMİZ kalsın (nodeId#member + body keylenir); onarım bilgisi phase'de.
-      opts.onProgress?.(rr);
-    });
-    lastRepaired = repairJobs.length;
-  }
-  // Son turun onarımları henüz ÖLÇÜLMEDİYSE bir kez daha doğrula → report.typecheck
-  // GERÇEK final durumu yansıtsın (aksi halde son-tur onarımları rapora geçmez).
-  if (lastRepaired > 0 && !opts.skipVerify) {
-    try {
-      fixMissingImportsInFiles(opts.rootDir, filledFiles);
-    } catch {
-      /* en iyi çaba */
-    }
-    typecheck = runTypecheck(opts.rootDir);
-    const errorCount = (typecheck.output.match(/error TS/g) ?? []).length;
-    opts.onPhase?.({ kind: "verify", round: maxRepairRounds + 1, ok: typecheck.ok, errorCount });
+    opts.onPhase?.({ kind: "verify", round: 0, ok: typecheck.ok, errorCount });
   }
 
   const regions = [...results.values()];

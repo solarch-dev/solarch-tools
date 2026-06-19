@@ -22,6 +22,11 @@ export {
   type SurgicalSummary,
   type WriteBodyResult,
 } from "./surgical.js";
+export {
+  DiagnosticsPool,
+  type PooledProblem,
+  type RegionProblems,
+} from "./diagnostics-pool.js";
 export { cleanTypeText, unwrapTypeName } from "./extract.js";
 export {
   BOUND_MARKER,

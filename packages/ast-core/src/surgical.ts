@@ -588,6 +588,82 @@ export function writeSurgicalBody(
   };
 }
 
+/** Projedeki owned (src/) sınıf adı → bildirim dosyası haritası. İsim çakışmasında
+ *  (owned `Like` vs typeorm `Like` operatörü) owned'ı tercih etmek için. fixMissingImports
+ *  pas'ı ve DiagnosticsPool ortak kullanır. */
+export function buildOwnedClassMap(project: Project): Map<string, SourceFile> {
+  const map = new Map<string, SourceFile>();
+  for (const osf of project.getSourceFiles()) {
+    if (!/[/\\]src[/\\]/.test(osf.getFilePath())) continue;
+    for (const c of osf.getClasses()) {
+      const n = c.getName();
+      if (n && !map.has(n)) map.set(n, osf);
+    }
+  }
+  return map;
+}
+
+/** TEK bir SourceFile'da eksik import'ları düzelt — IN-MEMORY (KAYDETMEZ). Çağıran
+ *  (disk pas'ı ya da DiagnosticsPool) ister kaydeder → aynı mantık hem soğuk-disk hem
+ *  sıcak-program yolunda tek kaynaktan. */
+export function fixImportsInSourceFile(
+  sf: SourceFile,
+  ownedClassByName: Map<string, SourceFile>,
+  srcRoot: string,
+): void {
+  for (const imp of sf.getImportDeclarations()) {
+    const spec = imp.getModuleSpecifierValue();
+    // (a) Çözülmeyen GÖRELİ import (yanlış yol) → kaldır, fixMissingImports doğrusuyla ekler.
+    if (spec.startsWith(".") && !imp.getModuleSpecifierSourceFile()) {
+      imp.remove();
+      continue;
+    }
+    // (b) baseUrl-köklü YEREL import: tsc çözer ama jest çözemez → relative tercihiyle yeniden.
+    const target = imp.getModuleSpecifierSourceFile();
+    if (!spec.startsWith(".") && target && target.getFilePath().startsWith(srcRoot)) {
+      imp.remove();
+      continue;
+    }
+    // (c) jest global'leri ASLA import edilmez (@types/jest global verir).
+    if (spec === "node:test" || spec === "@jest/globals") {
+      imp.remove();
+      continue;
+    }
+  }
+  // İSİM ÇAKIŞMASI: `new X()` hedefi owned bir sınıfsa, owned kaynağı node_modules'a TERCİH et.
+  const newedNames = new Set<string>();
+  for (const ne of sf.getDescendantsOfKind(SyntaxKind.NewExpression)) {
+    const callee = ne.getExpression();
+    if (callee.getKind() === SyntaxKind.Identifier) newedNames.add(callee.getText());
+  }
+  for (const name of newedNames) {
+    const ownerSf = ownedClassByName.get(name);
+    if (!ownerSf || ownerSf === sf) continue;
+    let hasOwnedRel = false;
+    for (const imp of sf.getImportDeclarations()) {
+      const ni = imp.getNamedImports().find((n) => n.getName() === name);
+      if (!ni) continue;
+      const spec = imp.getModuleSpecifierValue();
+      if (spec.startsWith(".") && imp.getModuleSpecifierSourceFile() === ownerSf) {
+        hasOwnedRel = true;
+        continue;
+      }
+      if (!spec.startsWith(".")) {
+        if (imp.getNamedImports().length === 1 && !imp.getDefaultImport() && !imp.getNamespaceImport()) imp.remove();
+        else ni.remove();
+      }
+    }
+    if (!hasOwnedRel) {
+      sf.addImportDeclaration({ moduleSpecifier: sf.getRelativePathAsModuleSpecifierTo(ownerSf), namedImports: [name] });
+    }
+  }
+  sf.fixMissingImports(undefined, { importModuleSpecifierPreference: "relative" });
+  for (const imp of sf.getImportDeclarations()) {
+    const spec = imp.getModuleSpecifierValue();
+    if (spec === "node:test" || spec === "@jest/globals") imp.remove();
+  }
+}
+
 /** Dolan gövdeler yerel tipler (örn. bir entity) kullanıp dosya başına import
  *  EKLEYEMEZ (yalnız gövde yazılır). Bu pas, projenin tamamını yükleyip her dolu
  *  dosyada eksik import'ları TS dil servisiyle ekler (`new Complaint()` → import). */
@@ -604,83 +680,13 @@ export function fixMissingImportsInFiles(rootDir: string, relFiles: string[]): {
     }
   }
   const srcRoot = resolve(rootDir, "src");
-  // İSİM ÇAKIŞMASI haritası: owned (src/) sınıf adı → bildirim dosyası. Auto-import,
-  // owned bir entity'yi (ör. `Like`) aynı adı export eden bir node_modules paketine
-  // (typeorm'un `Like` sorgu-operatörü) karşı tercih etmez → `new Like()` yanlış kaynağa
-  // bağlanır (TS2554/TS7009). Bu harita ile owned kaynağı geri kazanırız.
-  const ownedClassByName = new Map<string, SourceFile>();
-  for (const osf of project.getSourceFiles()) {
-    if (!/[/\\]src[/\\]/.test(osf.getFilePath())) continue;
-    for (const c of osf.getClasses()) {
-      const n = c.getName();
-      if (n && !ownedClassByName.has(n)) ownedClassByName.set(n, osf);
-    }
-  }
+  const ownedClassByName = buildOwnedClassMap(project);
   const fixed: string[] = [];
   for (const rel of relFiles) {
     const sf = project.getSourceFile(resolve(rootDir, rel));
     if (!sf) continue;
     try {
-      for (const imp of sf.getImportDeclarations()) {
-        const spec = imp.getModuleSpecifierValue();
-        // (a) Çözülmeyen GÖRELİ import (yanlış yol, örn. `../../` vs `../`) → kaldır,
-        //     fixMissingImports doğrusuyla ekler.
-        if (spec.startsWith(".") && !imp.getModuleSpecifierSourceFile()) {
-          imp.remove();
-          continue;
-        }
-        // (b) baseUrl-köklü YEREL import (örn. `src/common/...`): tsc çözer ama jest
-        //     çözemez ve dosya geri kalanı göreli. Kaldır → relative tercihiyle yeniden eklensin.
-        const target = imp.getModuleSpecifierSourceFile();
-        if (!spec.startsWith(".") && target && target.getFilePath().startsWith(srcRoot)) {
-          imp.remove();
-          continue;
-        }
-        // (c) jest global'leri (describe/it/expect/jest/beforeEach) ASLA import edilmez —
-        //     @types/jest onları global verir. fixMissingImports bunları `node:test`'ten
-        //     çekmeye meyleder; çekerse jest "0 test" görür + TAP üretir. Bu import'ları sök.
-        if (spec === "node:test" || spec === "@jest/globals") {
-          imp.remove();
-          continue;
-        }
-      }
-      // İSİM ÇAKIŞMASI: `new X()` hedefi owned bir sınıfsa (entity), owned kaynağı
-      // node_modules'a TERCİH et. `new` yalnız sınıfa uygulanır (operatör/fonksiyona
-      // değil) → güvenli sinyal. Yanlış node_modules import'unu sök + owned relatif ekle.
-      const newedNames = new Set<string>();
-      for (const ne of sf.getDescendantsOfKind(SyntaxKind.NewExpression)) {
-        const callee = ne.getExpression();
-        if (callee.getKind() === SyntaxKind.Identifier) newedNames.add(callee.getText());
-      }
-      for (const name of newedNames) {
-        const ownerSf = ownedClassByName.get(name);
-        if (!ownerSf || ownerSf === sf) continue; // owned değil ya da aynı dosyada → dokunma
-        let hasOwnedRel = false;
-        for (const imp of sf.getImportDeclarations()) {
-          const ni = imp.getNamedImports().find((n) => n.getName() === name);
-          if (!ni) continue;
-          const spec = imp.getModuleSpecifierValue();
-          if (spec.startsWith(".") && imp.getModuleSpecifierSourceFile() === ownerSf) {
-            hasOwnedRel = true; // doğru owned import zaten var
-            continue;
-          }
-          if (!spec.startsWith(".")) {
-            // node_modules'tan aynı isim → yanlış kaynak, sök.
-            if (imp.getNamedImports().length === 1 && !imp.getDefaultImport() && !imp.getNamespaceImport()) imp.remove();
-            else ni.remove();
-          }
-        }
-        if (!hasOwnedRel) {
-          sf.addImportDeclaration({ moduleSpecifier: sf.getRelativePathAsModuleSpecifierTo(ownerSf), namedImports: [name] });
-        }
-      }
-      // Yeni import'lar GÖRELİ yolla eklensin (jest ts-jest baseUrl'i onurlandırmaz).
-      sf.fixMissingImports(undefined, { importModuleSpecifierPreference: "relative" });
-      // fixMissingImports yine node:test çekmiş olabilir → son bir süpürme.
-      for (const imp of sf.getImportDeclarations()) {
-        const spec = imp.getModuleSpecifierValue();
-        if (spec === "node:test" || spec === "@jest/globals") imp.remove();
-      }
+      fixImportsInSourceFile(sf, ownedClassByName, srcRoot);
       fixed.push(rel);
     } catch {
       /* dil servisi çözemezse atla */

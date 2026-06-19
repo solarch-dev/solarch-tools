@@ -259,6 +259,28 @@ describe("fillProject — paralel (per-file), scripted transport", () => {
     expect(a.match(/@solarch:filled/g)?.length).toBe(2);
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it("DiagnosticsPool entegrasyonu: dolan gövdenin eksik owned import'unu havuz ekler", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fillp-pool-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "widget.entity.ts"), `export class Widget {\n  id!: string;\n}\n`);
+    writeFileSync(join(dir, "src", "w.service.ts"), svc("WService", [{ name: "make", node: "w1" }]));
+
+    // Gövde owned `Widget`'ı kullanır ama import edemez (yalnız gövde yazılır) →
+    // repair fazının TEK SICAK HAVUZU (DiagnosticsPool.fixImports) import'u eklemeli.
+    const report = await fillProject({
+      rootDir: dir,
+      llm: DUMMY_LLM,
+      transport: scriptedTransport(["return new Widget();"], "verify_fill"),
+      skipVerify: true,
+    });
+
+    expect(report.filled).toBe(1);
+    const w = readFileSync(join(dir, "src", "w.service.ts"), "utf8");
+    expect(w).toContain("new Widget()"); // gövde yazıldı
+    expect(w).toMatch(/import \{ Widget \} from "\.\/widget\.entity"/); // havuz eksik import'u ekledi
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe("SPEC_SYSTEM (davranış-testi kuralları)", () => {
