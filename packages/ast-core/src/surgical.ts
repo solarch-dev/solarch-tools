@@ -28,7 +28,7 @@
 
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { ClassDeclaration, EnumDeclaration, MethodDeclaration, Node, Project, SourceFile, SyntaxKind, ts, Type } from "ts-morph";
+import { ClassDeclaration, EnumDeclaration, ImportDeclaration, MethodDeclaration, Node, Project, SourceFile, SyntaxKind, ts, Type } from "ts-morph";
 
 export type SurgicalStatus = "skeleton" | "filled";
 export type FilledBy = "ai" | "human" | "codegen";
@@ -724,23 +724,22 @@ export function completeType(filePath: string, typeName: string): CompleteTypeRe
   } catch {
     return { kind: "unknown" };
   }
+  return completeTypeFromSf(sf, typeName);
+}
+
+/** completeType çekirdeği — verilen SourceFile (taze ya da SICAK havuz programı)
+ *  üstünden tipi çözer. DiagnosticsPool.completeType bunu warm programla çağırır. */
+export function completeTypeFromSf(sf: SourceFile, typeName: string): CompleteTypeResult {
   let cls = sf.getClass(typeName);
   let en = sf.getEnum(typeName);
   if (!cls && !en) {
-    const fromDir = dirname(filePath);
     for (const imp of sf.getImportDeclarations()) {
-      const spec = imp.getModuleSpecifierValue();
-      if (!spec.startsWith(".")) continue; // yalnız yerel tipler (owned)
+      if (!imp.getModuleSpecifierValue().startsWith(".")) continue; // yalnız yerel (owned)
       if (!imp.getNamedImports().some((ni) => ni.getName() === typeName)) continue;
-      const resolved = resolveLocalImport(fromDir, spec);
-      if (!resolved) continue;
-      try {
-        const depSf = project.addSourceFileAtPath(resolved);
-        cls = depSf.getClass(typeName);
-        en = depSf.getEnum(typeName);
-      } catch {
-        continue;
-      }
+      const depSf = resolveImportedSf(imp, sf.getProject());
+      if (!depSf) continue;
+      cls = depSf.getClass(typeName);
+      en = depSf.getEnum(typeName);
       if (cls || en) break;
     }
   }
@@ -796,6 +795,11 @@ export function readFillContext(filePath: string, className: string, member: str
   } catch {
     return null;
   }
+  return fillContextFromSf(sf, className, member);
+}
+
+/** readFillContext çekirdeği — verilen SourceFile üstünden (taze ya da SICAK havuz). */
+export function fillContextFromSf(sf: SourceFile, className: string, member: string): SurgicalFillContext | null {
   const cls = sf.getClass(className);
   const method = cls?.getMethod(member);
   if (!cls || !method) return null;
@@ -894,6 +898,22 @@ function resolveLocalImport(fromDir: string, spec: string): string | null {
   return null;
 }
 
+/** Bir import'u hedef SourceFile'ına çöz — HEM sıcak program (hepsi yüklü → doğrudan)
+ *  HEM taze proje (yalnız bir dosya → diskten lazy ekle) için. Grounding fonksiyonları
+ *  böylece DiagnosticsPool'un warm programından da, disk pas'ının taze projesinden de
+ *  beslenir (tek kaynak). */
+function resolveImportedSf(imp: ImportDeclaration, project: Project): SourceFile | null {
+  const direct = imp.getModuleSpecifierSourceFile();
+  if (direct) return direct; // sıcak: zaten yüklü
+  const resolved = resolveLocalImport(dirname(imp.getSourceFile().getFilePath()), imp.getModuleSpecifierValue());
+  if (!resolved) return null;
+  try {
+    return project.addSourceFileAtPath(resolved); // taze: diskten ekle
+  } catch {
+    return null;
+  }
+}
+
 /** Dolan dosyanın yerel import'larından çağrılabilir API yüzeyini çıkar:
  *  her import edilen sınıf/enum için imzalar/üyeler. Prompt'a gömülür ki AI
  *  metod/arity/exception-ctor/enum-değeri UYDURMASIN, gerçeğini kullansın. */
@@ -905,20 +925,17 @@ export function readDeclaredSurface(filePath: string): string {
   } catch {
     return "";
   }
-  const fromDir = dirname(filePath);
+  return declaredSurfaceFromSf(sf);
+}
+
+/** readDeclaredSurface çekirdeği — verilen SourceFile üstünden (taze ya da SICAK havuz). */
+export function declaredSurfaceFromSf(sf: SourceFile): string {
   const blocks: string[] = [];
   const seen = new Set<string>();
   for (const imp of sf.getImportDeclarations()) {
-    const spec = imp.getModuleSpecifierValue();
-    if (!spec.startsWith(".")) continue; // yalnız yerel tipler (3. parti değil)
-    const resolved = resolveLocalImport(fromDir, spec);
-    if (!resolved) continue;
-    let depSf;
-    try {
-      depSf = project.addSourceFileAtPath(resolved);
-    } catch {
-      continue;
-    }
+    if (!imp.getModuleSpecifierValue().startsWith(".")) continue; // yalnız yerel tipler
+    const depSf = resolveImportedSf(imp, sf.getProject());
+    if (!depSf) continue;
     for (const named of imp.getNamedImports()) {
       const n = named.getName();
       if (seen.has(n)) continue;
@@ -951,6 +968,11 @@ export function readExpectedTypeHeaders(filePath: string, className: string, mem
   } catch {
     return "";
   }
+  return expectedTypeHeadersFromSf(sf, className, member);
+}
+
+/** readExpectedTypeHeaders çekirdeği — verilen SourceFile üstünden (taze ya da SICAK havuz). */
+export function expectedTypeHeadersFromSf(sf: SourceFile, className: string, member: string): string {
   const method = sf.getClass(className)?.getMethod(member);
   if (!method) return "";
   const blocks: string[] = [];

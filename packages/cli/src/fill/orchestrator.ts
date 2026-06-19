@@ -24,9 +24,9 @@
  *  Not built; the closed-world member set is already computed for the two paths above. */
 
 import { join } from "node:path";
-import { completeType, DiagnosticsPool, readDeclaredSurface, readExpectedTypeHeaders, readFillContext, readProjectCatalog, tryFillSurgicalBody, type SurgicalMember, type WriteBodyResult } from "@solarch/ast-core";
+import { completeType, DiagnosticsPool, readDeclaredSurface, readExpectedTypeHeaders, readFillContext, readProjectCatalog, tryFillSurgicalBody, type CompleteTypeResult, type SurgicalMember, type WriteBodyResult } from "@solarch/ast-core";
 import { runScan } from "../commands/scan.js";
-import { FILL_SYSTEM, buildFillUser } from "./prompt.js";
+import { FILL_SYSTEM, buildFillUser, type FillContext } from "./prompt.js";
 import { stripCodeFences, type LlmConfig } from "./llm.js";
 import { runToolAgent, type AgentTool, type ChatTransport, type ToolResolver } from "./agent.js";
 import { generateSpecForService, type SpecResult } from "./spec.js";
@@ -181,54 +181,74 @@ export function selectSkeletons(rootDir: string, region?: string): RegionTarget[
  *  yükler → başarısız deneme stub'ı bozmaz). Ajan yeşile (ok) ya da tur-tavanına
  *  kadar döner. `feedback` (önceki tsc/kontrat turu) ajanın ilk mesajına tohumlanır. */
 export async function fillRegion(target: RegionTarget, opts: FillOptions, feedback?: string[]): Promise<FillRegionResult> {
-  const filePath = join(opts.rootDir, target.file);
-  // İlk dolum: doğrulama arka ucu tryFillSurgicalBody (her çağrı TAZE proje + checkTypes
-  // → başarısız deneme stub'ı bozmaz; ilk pas paralel olduğu için izole proje gerekli).
-  return runRegionAgent(target, opts, feedback, (body) =>
-    tryFillSurgicalBody(filePath, target.className, target.member.member, body, new Date().toISOString(), {
-      rootDir: opts.rootDir,
-      checkTypes: true,
-    }),
-  );
-}
-
-/** Onarım yolu: doğrulama arka ucu DiagnosticsPool (TEK SICAK program). Gövde belleğe
- *  uygulanır + warm LS ile artımsal denetlenir; her tur yeni soğuk proje/tsc YOK. */
-async function repairRegionInPool(
-  target: RegionTarget,
-  opts: FillOptions,
-  pool: DiagnosticsPool,
-  feedback: string[],
-): Promise<FillRegionResult> {
-  return runRegionAgent(target, opts, feedback, (body) =>
-    pool.applyBody(target.file, target.className, target.member.member, body, new Date().toISOString()),
-  );
-}
-
-/** Bölge doldurma AJAN ÇEKİRDEĞİ — grounding + tool-calling loop TEK kaynaktan. `apply`
- *  doğrulama arka ucunu soyutlar (ilk dolum: taze proje; onarım: sıcak havuz) → grounding,
- *  lookup_members, feedback, sonuç-eşleme her iki yolda aynı kalır. */
-async function runRegionAgent(
-  target: RegionTarget,
-  opts: FillOptions,
-  feedback: string[] | undefined,
-  apply: (body: string) => WriteBodyResult,
-): Promise<FillRegionResult> {
   const base = { nodeId: target.nodeId, member: target.member.member, file: target.file };
   const filePath = join(opts.rootDir, target.file);
-
   const parts = readFillContext(filePath, target.className, target.member.member);
   if (!parts) return { ...base, status: "error", attempts: 0, error: `region not found in ${target.file}` };
-  // Grounding (whole-codebase farkındalığı): (1) dosyanın import yüzeyi, (2) ChatLSP
-  // "headers" — metodun üretmesi/tüketmesi gereken tiplerin gerçek şekli (dönüş+param,
-  // transitif), (3) Aider repo-map — projenin tüm owned tip kataloğu (lookup_members için).
-  const ctx = {
+  // İlk dolum grounding: TAZE projeler (ilk pas paralel → izole gerekli). Doğrulama +
+  // lookup da taze proje. Grounding: (1) import yüzeyi, (2) ChatLSP beklenen-tip header'ları,
+  // (3) Aider repo-map kataloğu (lookup_members için).
+  const ctx: FillContext = {
     className: target.className,
     ...parts,
     apiSurface: readDeclaredSurface(filePath),
     expectedTypes: readExpectedTypeHeaders(filePath, target.className, target.member.member),
     catalog: opts.projectCatalog ?? readProjectCatalog(opts.rootDir),
   };
+  return runRegionAgent(
+    target,
+    opts,
+    feedback,
+    ctx,
+    (typeName) => completeType(filePath, typeName),
+    (body) =>
+      tryFillSurgicalBody(filePath, target.className, target.member.member, body, new Date().toISOString(), {
+        rootDir: opts.rootDir,
+        checkTypes: true,
+      }),
+  );
+}
+
+/** Onarım yolu: grounding + doğrulama + lookup HEPSİ DiagnosticsPool'un SICAK programından
+ *  → repair'de taze proje AÇMA yok; in-memory düzeltmeler de görünür (disk-staleness yok). */
+async function repairRegionInPool(
+  target: RegionTarget,
+  opts: FillOptions,
+  pool: DiagnosticsPool,
+  feedback: string[],
+): Promise<FillRegionResult> {
+  const base = { nodeId: target.nodeId, member: target.member.member, file: target.file };
+  const parts = pool.fillContext(target.file, target.className, target.member.member);
+  if (!parts) return { ...base, status: "error", attempts: 0, error: `region not found in ${target.file}` };
+  const ctx: FillContext = {
+    className: target.className,
+    ...parts,
+    apiSurface: pool.declaredSurface(target.file),
+    expectedTypes: pool.expectedTypeHeaders(target.file, target.className, target.member.member),
+    catalog: opts.projectCatalog ?? "",
+  };
+  return runRegionAgent(
+    target,
+    opts,
+    feedback,
+    ctx,
+    (typeName) => pool.completeType(target.file, typeName),
+    (body) => pool.applyBody(target.file, target.className, target.member.member, body, new Date().toISOString()),
+  );
+}
+
+/** Bölge doldurma AJAN ÇEKİRDEĞİ — tool-calling loop TEK kaynaktan. ctx (grounding),
+ *  lookup (lookup_members), apply (doğrula+commit) arka uçları dışarıdan verilir → ilk
+ *  dolum (taze proje) ve onarım (sıcak havuz) aynı loop/feedback/sonuç-eşlemeyi paylaşır. */
+async function runRegionAgent(
+  target: RegionTarget,
+  opts: FillOptions,
+  feedback: string[] | undefined,
+  ctx: FillContext,
+  lookup: (typeName: string) => CompleteTypeResult,
+  apply: (body: string) => WriteBodyResult,
+): Promise<FillRegionResult> {
+  const base = { nodeId: target.nodeId, member: target.member.member, file: target.file };
 
   let lastViolations: string[] | undefined;
   let toolError: string | undefined;
@@ -238,7 +258,7 @@ async function runRegionAgent(
     if (call.name === "lookup_members") {
       const typeName = typeof call.args?.type === "string" ? call.args.type.trim() : "";
       if (!typeName) return { content: JSON.stringify({ error: "pass an owned type name in `type`" }) };
-      return { content: JSON.stringify(completeType(filePath, typeName)) };
+      return { content: JSON.stringify(lookup(typeName)) };
     }
     // verify_fill (varsayılan): doğrula (apply) + temizse commit.
     const code = typeof call.args?.code === "string" ? call.args.code.trim() : "";

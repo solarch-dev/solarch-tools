@@ -17,7 +17,18 @@
 import { existsSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { ClassDeclaration, MethodDeclaration, Project, SourceFile, ts } from "ts-morph";
-import { buildOwnedClassMap, fixImportsInSourceFile, writeSurgicalBody, type WriteBodyResult } from "./surgical.js";
+import {
+  buildOwnedClassMap,
+  completeTypeFromSf,
+  declaredSurfaceFromSf,
+  expectedTypeHeadersFromSf,
+  fillContextFromSf,
+  fixImportsInSourceFile,
+  writeSurgicalBody,
+  type CompleteTypeResult,
+  type SurgicalFillContext,
+  type WriteBodyResult,
+} from "./surgical.js";
 
 const MARKER_RE = /@solarch:surgical\s+id=([^\s#]+)#(\S+)/;
 
@@ -150,6 +161,39 @@ export class DiagnosticsPool {
   /** Kirli dosyaları diske yaz (yalnız değişenler — ucuz I/O; type-check değil). */
   save(): void {
     this.project.saveSync();
+  }
+
+  /* ── GROUNDING (sıcak programdan — repair'de taze proje açma yok) ──────────
+   *  Aynı çekirdekler (fillContextFromSf vb.) hem disk pas'ında hem burada; fark:
+   *  bunlar WARM program SourceFile'ını kullanır (hepsi yüklü+bağlı + in-memory
+   *  düzeltmeler görünür → disk-staleness yok). */
+
+  /** Bölgenin imza+constructor+import bağlamı (warm programdan). */
+  fillContext(file: string, className: string, member: string): SurgicalFillContext | null {
+    const sf = this.sourceFile(file);
+    return sf ? fillContextFromSf(sf, className, member) : null;
+  }
+
+  /** Dosyanın import yüzeyi — owned tiplerin metod/üye imzaları (warm programdan). */
+  declaredSurface(file: string): string {
+    const sf = this.sourceFile(file);
+    return sf ? declaredSurfaceFromSf(sf) : "";
+  }
+
+  /** ChatLSP "headers" — metodun üret/tüket tiplerinin gerçek şekli (warm programdan). */
+  expectedTypeHeaders(file: string, className: string, member: string): string {
+    const sf = this.sourceFile(file);
+    return sf ? expectedTypeHeadersFromSf(sf, className, member) : "";
+  }
+
+  /** lookup_members — bir owned tipin gerçek yüzeyi (warm programdan; taze proje yok). */
+  completeType(file: string, typeName: string): CompleteTypeResult {
+    const sf = this.sourceFile(file);
+    return sf ? completeTypeFromSf(sf, typeName) : { kind: "unknown" };
+  }
+
+  private sourceFile(file: string): SourceFile | undefined {
+    return this.project.getSourceFile(resolve(this.rootDir, file));
   }
 
   private surgicalMethod(cls: ClassDeclaration, member: string): MethodDeclaration | undefined {

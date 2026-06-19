@@ -94,6 +94,24 @@ describe("DiagnosticsPool", () => {
     expect(onDisk).not.toContain(`return "five"`);
   });
 
+  it("grounding metodları SICAK programdan okur (taze proje açmaz)", () => {
+    const pool = new DiagnosticsPool(dir);
+    // fillContext: imza + import'lar
+    const ctx = pool.fillContext("src/stats.service.ts", "StatsService", "nameOf");
+    expect(ctx?.signature).toContain("nameOf");
+    expect(ctx?.imports).toContain("User");
+    // declaredSurface: import edilen owned tipin yüzeyi
+    expect(pool.declaredSurface("src/stats.service.ts")).toContain("class User");
+    // expectedTypeHeaders: param tipi (User) gerçek alanlarıyla
+    const headers = pool.expectedTypeHeaders("src/stats.service.ts", "StatsService", "nameOf");
+    expect(headers).toContain("class User");
+    expect(headers).toContain("name");
+    // completeType: owned tip → gerçek üyeler
+    const ct = pool.completeType("src/stats.service.ts", "User");
+    expect(ct.kind).toBe("class");
+    expect(ct.members).toContain("name");
+  });
+
   it("fixImports(): kullanılan owned tipin eksik import'unu ekler", () => {
     // import'suz `new User()` kullanan dosya → fixImports User import'unu eklemeli.
     writeFileSync(
