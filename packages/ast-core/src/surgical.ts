@@ -31,7 +31,7 @@ import { dirname, join, resolve } from "node:path";
 import { ClassDeclaration, EnumDeclaration, MethodDeclaration, Node, Project, SourceFile, SyntaxKind, ts, Type } from "ts-morph";
 
 export type SurgicalStatus = "skeleton" | "filled";
-export type FilledBy = "ai" | "human";
+export type FilledBy = "ai" | "human" | "codegen";
 
 export interface SurgicalMember {
   /** Metot/üye adı (işaretten; yoksa bildirimden). */
@@ -435,7 +435,10 @@ function readMethodMarker(method: MethodDeclaration, injected: Set<string>): Sur
 
   if (status === "filled") {
     const filledMatch = FILLED_RE.exec(bodyText);
-    member.filledBy = filledMatch?.[1] === "ai" ? "ai" : "human";
+    const by = filledMatch?.[1];
+    // codegen: Constructor'ın deterministik olarak tam ürettiği bölge (ör. queue producer)
+    // — "AI ya da insan doldurdu" değil "sistem üretti". UI dolu (yeşil) gösterir; fill atlar.
+    member.filledBy = by === "ai" ? "ai" : by === "codegen" ? "codegen" : "human";
     if (filledMatch?.[2]) member.filledAt = filledMatch[2];
 
     const violations = checkContract(method, injected, deps, throws);
