@@ -16,6 +16,7 @@ import { pullCommand } from "./commands/pull.js";
 import { pushCommand } from "./commands/push.js";
 import { generateCommand } from "./commands/generate.js";
 import { fillCommand } from "./commands/fill.js";
+import { fixImportsCommand } from "./commands/fix-imports.js";
 import { bindCommand } from "./commands/bind.js";
 import { watchCommand } from "./commands/watch.js";
 import { cliVersion } from "./version.js";
@@ -24,7 +25,7 @@ const rootDir = () => process.cwd();
 const argv = process.argv.slice(2);
 
 const SUBCOMMANDS = new Set([
-  "connect", "login", "link", "init", "scan", "status", "diff", "pull", "push", "generate", "fill", "bind", "watch",
+  "connect", "login", "link", "init", "scan", "status", "diff", "pull", "push", "generate", "fill", "fix-imports", "bind", "watch",
 ]);
 
 // Bare `solarch` → branded help (no subcommand).
@@ -150,6 +151,15 @@ program
   .option("--json", "Machine-readable NDJSON progress (one line per region + a final report)")
   .action(async (opts: { all?: boolean; region?: string; attempts?: number; parallel?: number; skipVerify?: boolean; withTests?: boolean; json?: boolean }) => {
     await fillCommand({ rootDir: rootDir(), all: opts.all, region: opts.region, attempts: opts.attempts, concurrency: opts.parallel, skipVerify: opts.skipVerify, withTests: opts.withTests, json: opts.json });
+  });
+
+program
+  .command("fix-imports")
+  .description("Resolve missing imports in filled files (deterministic — no AI, no tsc). The AI writes the body; the system owns imports.")
+  .option("--all", "Process every @solarch:filled file under src (default)")
+  .option("--json", "Machine-readable NDJSON output (one { event: 'fixed', files } line)")
+  .action(async (opts: { all?: boolean; json?: boolean }) => {
+    await fixImportsCommand({ rootDir: rootDir(), json: opts.json });
   });
 
 program
