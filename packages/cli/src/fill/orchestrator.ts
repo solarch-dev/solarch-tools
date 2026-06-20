@@ -24,7 +24,7 @@
  *  Not built; the closed-world member set is already computed for the two paths above. */
 
 import { join } from "node:path";
-import { completeType, DiagnosticsPool, readDeclaredSurface, readExpectedTypeHeaders, readFillContext, readProjectCatalog, tryFillSurgicalBody, type CompleteTypeResult, type SurgicalMember, type WriteBodyResult } from "@solarch/ast-core";
+import { completeType, DiagnosticsPool, formatTypeShape, readDeclaredSurface, readExpectedTypeHeaders, readFillContext, readProjectCatalog, tryFillSurgicalBody, type CompleteTypeResult, type SurgicalMember, type WriteBodyResult } from "@solarch/ast-core";
 import { runScan } from "../commands/scan.js";
 import { FILL_SYSTEM, buildFillUser, type FillContext } from "./prompt.js";
 import { stripCodeFences, type LlmConfig } from "./llm.js";
@@ -56,10 +56,12 @@ const VERIFY_FILL_TOOL: AgentTool = {
 const LOOKUP_MEMBERS_TOOL: AgentTool = {
   name: "lookup_members",
   description:
-    "Look up the EXACT members of an owned (project) type before you reference them — never guess an identifier. " +
-    "Pass a class/enum/exception name from the API surface (e.g. User, OrderStatus, NotFoundException). Returns its " +
-    "real members/method signatures (class), literals (enum), or constructor (exception); {kind:'unknown'} if the " +
-    "type is third-party/not in scope. Use the returned spelling/casing verbatim.",
+    "Look up the EXACT shape of an owned (project) type before you reference or construct it — never guess. " +
+    "Pass a class/enum/exception/DTO name from the API surface (e.g. User, VideoDto, OrderStatus, NotFoundException). " +
+    "Returns each field with its TYPE and NULLABILITY (e.g. `videoUrl: string`, `description?: string | undefined`), " +
+    "method signatures, enum literals, or the exception constructor; 'not an owned type' if third-party/out of scope. " +
+    "Use this to see whether a field is required or optional so you can bridge nullability (default or throw) instead of " +
+    "assigning a nullable value to a required field.",
   parameters: {
     type: "object",
     properties: { type: { type: "string", description: "An owned class/enum/exception name from the API surface." } },
@@ -258,7 +260,9 @@ async function runRegionAgent(
     if (call.name === "lookup_members") {
       const typeName = typeof call.args?.type === "string" ? call.args.type.trim() : "";
       if (!typeName) return { content: JSON.stringify({ error: "pass an owned type name in `type`" }) };
-      return { content: JSON.stringify(lookup(typeName)) };
+      // Alanları TİP + nullability ile sun (videoUrl: string, description?: string | undefined) →
+      // AI yazmadan önce kesin nullability'yi görür. İsim-yalnız liste nullable'ı gizlerdi.
+      return { content: formatTypeShape(typeName, lookup(typeName)) };
     }
     // verify_fill (varsayılan): doğrula (apply) + temizse commit.
     const code = typeof call.args?.code === "string" ? call.args.code.trim() : "";

@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { completeType, fixMissingImportsInFiles, readDeclaredSurface, readExpectedTypeHeaders, readProjectCatalog, scanProject, summarizeSurgical, tryFillSurgicalBody } from "../src/index.js";
+import { completeType, formatTypeShape, fixMissingImportsInFiles, readDeclaredSurface, readExpectedTypeHeaders, readProjectCatalog, scanProject, summarizeSurgical, tryFillSurgicalBody } from "../src/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "ast-surgical-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -441,5 +441,71 @@ describe("fixMissingImportsInFiles — isim çakışması: owned entity node_mod
     const out = readFileSync(svc, "utf8");
     expect(out).not.toMatch(/from "typeorm"/); // yanlış kaynak gitti
     expect(out).toMatch(/import \{ Like \} from "\.\/entities\/like\.entity"/); // owned relatif kazandı
+  });
+});
+
+describe("SoT nullability grounding — completeType alan tipi + reaktif tip-hata zenginleştirme", () => {
+  const sdir = mkdtempSync(join(tmpdir(), "ast-sot-"));
+  afterAll(() => rmSync(sdir, { recursive: true, force: true }));
+  mkdirSync(join(sdir, "src"), { recursive: true });
+  writeFileSync(
+    join(sdir, "tsconfig.json"),
+    JSON.stringify({ compilerOptions: { target: "ES2022", module: "commonjs", strict: true, skipLibCheck: true } }),
+  );
+  // Diyagram çelişkisi simülasyonu: entity.videoUrl NULLABLE, dto.videoUrl REQUIRED.
+  writeFileSync(join(sdir, "src", "video.entity.ts"), `export class Video {\n  id!: string;\n  videoUrl?: string;\n}\n`);
+  writeFileSync(join(sdir, "src", "video.dto.ts"), `export class VideoDto {\n  id!: string;\n  videoUrl!: string;\n}\n`);
+  const svcPath = join(sdir, "src", "video.service.ts");
+  const SKEL = [
+    `import { Video } from "./video.entity";`,
+    `import { VideoDto } from "./video.dto";`,
+    ``,
+    `export class VideoService {`,
+    `  async getVideo(id: string): Promise<VideoDto> {`,
+    `    // @solarch:surgical id=ssss1111-2222-3333-4444-555566660001#getVideo`,
+    `    throw new Error("NOT_IMPLEMENTED: VideoService.getVideo");`,
+    `  }`,
+    `}`,
+    ``,
+  ].join("\n");
+  const reset = () => writeFileSync(svcPath, SKEL);
+  const iso = "2026-06-20T00:00:00Z";
+  reset(); // svcPath'i kur (completeType import'ları buradan çözer)
+
+  it("completeType: alanları TİP + nullability ile döndürür (videoUrl required vs nullable)", () => {
+    const dto = completeType(svcPath, "VideoDto");
+    const ent = completeType(svcPath, "Video");
+    const dtoUrl = (dto.fields ?? []).find((f) => f.name === "videoUrl");
+    const entUrl = (ent.fields ?? []).find((f) => f.name === "videoUrl");
+    expect(dtoUrl).toMatchObject({ name: "videoUrl", optional: false }); // DTO: zorunlu
+    expect(entUrl).toMatchObject({ name: "videoUrl", optional: true }); // entity: nullable
+  });
+
+  it("formatTypeShape: nullable alanı `?` ile gösterir", () => {
+    const shape = formatTypeShape("Video", completeType(svcPath, "Video"));
+    expect(shape).toContain("videoUrl?: string");
+    expect(shape).toContain("id: string");
+  });
+
+  it("REAKTİF: nullable kaynağı zorunlu hedefe atayınca → tip hatası + AUTHORITATIVE TYPES (Video şekli) feedback'i + KAYDEDİLMEZ", () => {
+    reset();
+    // v.videoUrl (string | undefined) → VideoDto.videoUrl (string, zorunlu) köprüsüz atanıyor.
+    const body = `const v = new Video(); v.id = id; const dto: VideoDto = { id: v.id, videoUrl: v.videoUrl }; return dto;`;
+    const r = tryFillSurgicalBody(svcPath, "VideoService", "getVideo", body, iso, { rootDir: sdir, checkTypes: true });
+    expect(r.ok).toBe(true);
+    const vis = r.violations ?? [];
+    expect(vis.some((v) => /type error/.test(v))).toBe(true); // TS2322 yakalandı
+    expect(vis.some((v) => /AUTHORITATIVE TYPES/.test(v))).toBe(true); // SoT şekilleri eklendi
+    expect(vis.some((v) => /videoUrl\?: string/.test(v))).toBe(true); // kaynak entity nullable görünüyor
+    expect(readFileSync(svcPath, "utf8")).toContain("NOT_IMPLEMENTED"); // kaydedilmedi
+  });
+
+  it("KÖPRÜLÜ gövde (?? '') → tip hatası yok, KAYDEDİLİR", () => {
+    reset();
+    const body = `const v = new Video(); v.id = id; const dto: VideoDto = { id: v.id, videoUrl: v.videoUrl ?? '' }; return dto;`;
+    const r = tryFillSurgicalBody(svcPath, "VideoService", "getVideo", body, iso, { rootDir: sdir, checkTypes: true });
+    expect(r.ok).toBe(true);
+    expect((r.violations ?? []).some((v) => /type error/.test(v))).toBe(false);
+    expect(readFileSync(svcPath, "utf8")).toContain("videoUrl: v.videoUrl ?? ''");
   });
 });

@@ -201,9 +201,9 @@ describe("lookup_members + deterministik snap (scripted transport)", () => {
     };
     const r = await fillRegion(target, { rootDir: dir, llm: DUMMY_LLM, transport, skipVerify: true });
     expect(r.status).toBe("filled");
-    // lookup_members owned User'ın gerçek üyelerini döndürdü (uydurma değil).
-    expect(lookupResponse).toContain("fullName");
-    expect(lookupResponse).toContain('"kind":"class"');
+    // lookup_members owned User'ın gerçek üyelerini TİPLERİYLE döndürdü (uydurma değil).
+    expect(lookupResponse).toContain("User {");
+    expect(lookupResponse).toContain("fullName: string"); // alan adı + tip (nullability görünür)
     rmSync(dir, { recursive: true, force: true });
   });
 

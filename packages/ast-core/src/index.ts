@@ -8,6 +8,8 @@ export {
   readExpectedTypeHeaders,
   readProjectCatalog,
   completeType,
+  formatTypeShape,
+  ownedTypeShapesInMethod,
   fixMissingImportsInFiles,
   methodTypeDiagnostics,
   summarizeSurgical,

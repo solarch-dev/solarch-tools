@@ -616,7 +616,19 @@ export function writeSurgicalBody(
   // bırakmak yerine, model kendi bölgesini tam bağlamla GÖRDÜĞÜ döngüde düzeltsin. AST
   // ihlali varken koşmaz (çift-raporlama/kaskad gürültüsü olmasın — önce onları düzelt).
   if (checkTypes && violations.length === 0) {
-    violations.push(...methodTypeDiagnostics(method));
+    const typeDiags = methodTypeDiagnostics(method);
+    violations.push(...typeDiags);
+    // REAKTİF GROUNDING: tip hatası varsa, etkileşilen owned tiplerin GERÇEK şekillerini
+    // (tip + nullability) ekle → AI tahmin etmesin, SoT'a göre köprülesin (nullable→required).
+    if (typeDiags.length > 0) {
+      const shapes = ownedTypeShapesInMethod(method);
+      if (shapes.length > 0) {
+        violations.push(
+          "AUTHORITATIVE TYPES (Source of Truth — conform exactly; if a source field is optional/nullable " +
+            "and the target is required, bridge it explicitly with a default or throw): " + shapes.join(" | "),
+        );
+      }
+    }
   }
   return {
     ok: true,
@@ -742,6 +754,10 @@ export interface CompleteTypeResult {
   kind: "class" | "exception" | "enum" | "unknown";
   /** Class/exception: public alan adları (gerçek üyeler). */
   members?: string[];
+  /** Class/exception: public alanlar TİP + NULLABILITY ile (videoUrl: string,
+   *  description?: string | undefined). nullable kaynağı zorunlu hedefe köprülerken
+   *  AI'ın kesin nullability'yi görmesi için — isim-yalnız `members` yetmez. */
+  fields?: { name: string; type: string; optional: boolean }[];
   /** Class/exception: public metot imzaları (ad + arity + generic). */
   signatures?: string[];
   /** Enum: üye adı + değeri. */
@@ -764,6 +780,19 @@ export function completeType(filePath: string, typeName: string): CompleteTypeRe
     return { kind: "unknown" };
   }
   return completeTypeFromSf(sf, typeName);
+}
+
+/** Bir CompleteTypeResult'ı TEK SATIR insan/agent-okunur şekle çevirir — hem lookup_members
+ *  tool çıktısı hem reaktif tip-hata feedback'i AYNI biçimi kullansın diye. Alanlar tip +
+ *  nullability ile: "VideoDto { id: string; videoUrl: string; description?: string }". */
+export function formatTypeShape(name: string, r: CompleteTypeResult): string {
+  if (r.kind === "unknown") return `${name}: not an owned type (its shape is out of scope — do not guess its members)`;
+  if (r.kind === "enum") return `enum ${name} { ${(r.enumLiterals ?? []).map((l) => l.name).join(", ")} }`;
+  const fieldStr = (r.fields ?? []).map((f) => `${f.name}${f.optional ? "?" : ""}: ${f.type}`).join("; ");
+  const methodStr = (r.signatures ?? []).join("; ");
+  const ctorStr = r.ctor ? `constructor(${r.ctor})` : "";
+  const body = [fieldStr, methodStr, ctorStr].filter(Boolean).join("  ");
+  return `${r.kind === "exception" ? "exception " : ""}${name} { ${body} }`;
 }
 
 /** completeType çekirdeği — verilen SourceFile (taze ya da SICAK havuz programı)
@@ -793,19 +822,71 @@ export function completeTypeFromSf(sf: SourceFile, typeName: string): CompleteTy
     const ctorText = ctor
       ? ctor.getParameters().map((p) => `${p.getName()}: ${cleanType(p.getTypeNode()?.getText() ?? "unknown")}`).join(", ")
       : "";
-    const members = cls
-      .getProperties()
-      .filter((p) => !p.isStatic() && p.getScope() !== "private")
-      .map((p) => p.getName());
+    const publicProps = cls.getProperties().filter((p) => !p.isStatic() && p.getScope() !== "private");
+    const members = publicProps.map((p) => p.getName());
+    // Alan TİP + nullability: optional = `?` (varsayılan nullable kolon) VEYA tip undefined içerir.
+    // Tip metni önce DECLARED annotation (cleanType), yoksa çözülmüş tip. AI bunu okuyup
+    // nullable kaynağı (description?: string) zorunlu hedefe (videoUrl: string) köprüler.
+    const fields = publicProps.map((p) => {
+      const declared = p.getTypeNode()?.getText();
+      const type = cleanType(declared ?? p.getType().getText(p));
+      const optional = p.hasQuestionToken() || /\b(undefined|null)\b/.test(type);
+      return { name: p.getName(), type, optional };
+    });
     const signatures = cls
       .getMethods()
       .filter((m) => m.getScope() !== "private" && m.getScope() !== "protected")
       .map(methodSignature);
     const extendsText = cls.getExtends()?.getText() ?? "";
     const isException = /Exception$/.test(typeName) || /Exception|Error/.test(extendsText);
-    return { kind: isException ? "exception" : "class", members, signatures, ctor: ctorText };
+    return { kind: isException ? "exception" : "class", members, fields, signatures, ctor: ctorText };
   }
   return { kind: "unknown" };
+}
+
+/** node_modules/global jenerik kapsayıcıları — owned tip olarak sunulmaz (zaten
+ *  completeTypeFromSf 'unknown' der, ama erken eleyip gereksiz çözümü atlarız). */
+const GENERIC_BUILTINS = new Set([
+  "Promise", "Array", "ReadonlyArray", "Map", "Set", "Record", "Partial", "Pick", "Omit",
+  "Date", "Object", "Function", "Observable", "Buffer",
+]);
+
+/** REAKTİF GROUNDING: bir metodun ETKİLEŞTİĞİ owned tiplerin GERÇEK şekillerini
+ *  (formatTypeShape, tip + nullability ile) toplar — dönüş tipi + yerel değişken tipleri +
+ *  parametre tipleri (Promise/Array/union AÇILMIŞ). Tip hatası çıkınca retry feedback'ine
+ *  eklenir → AI hem hedef DTO (videoUrl: string, zorunlu) hem kaynak entity (videoUrl?:
+ *  string, nullable) yüzeyini görüp köprüyü (default ya da throw) doğru yazar. Tip çözümü
+ *  gerektirir (çağıran Project'i tsconfig'le kurmalı); çözülemezse boş döner. */
+export function ownedTypeShapesInMethod(method: MethodDeclaration): string[] {
+  const sf = method.getSourceFile();
+  const names = new Set<string>();
+  const collect = (t: Type, depth = 0): void => {
+    if (depth > 4) return;
+    for (const sub of t.isUnion() ? t.getUnionTypes() : [t]) {
+      const x = sub.getNonNullableType();
+      if (x.isArray()) {
+        const el = x.getArrayElementType();
+        if (el) collect(el, depth + 1);
+        continue;
+      }
+      for (const a of x.getTypeArguments()) collect(a, depth + 1); // Promise<T>, Map<K,V>…
+      const nm = (x.getSymbol() ?? x.getAliasSymbol())?.getName();
+      if (nm && /^[A-Z]/.test(nm) && !GENERIC_BUILTINS.has(nm)) names.add(nm);
+    }
+  };
+  try {
+    collect(method.getReturnType());
+    for (const v of method.getDescendantsOfKind(SyntaxKind.VariableDeclaration)) collect(v.getType());
+    for (const p of method.getParameters()) collect(p.getType());
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const n of [...names].sort()) {
+    const r = completeTypeFromSf(sf, n);
+    if (r.kind !== "unknown") out.push(formatTypeShape(n, r));
+  }
+  return out;
 }
 
 /* ── dosya-düzeyi fill köprüsü (ts-morph ast-core'da kapsüllü) ────── */
