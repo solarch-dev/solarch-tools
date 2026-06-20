@@ -393,6 +393,23 @@ describe("diagnostics-in-loop — bölge-bazında tip teşhisi (checkTypes): 'Pr
     expect(r.violations ?? []).toHaveLength(0);
     expect(readFileSync(svcPath, "utf8")).toContain("const f = new Foo();");
   });
+
+  it("OBJECT-LITERAL CAST owned tipe (`{...} as User`) → ihlal + KAYDEDİLMEZ (tsc mutlu olsa bile)", () => {
+    reset();
+    // { name } User'a ŞEKİLCE uyar → tsc TS2352 vermez; ama cast deseni yasak:
+    // uydurma entity inşası, import çözülünce kırılabilir. AST geçidi yakalar.
+    const r = tryFillSurgicalBody(svcPath, "StatsService", "compute", `const u = { name: "x" } as User; return 5;`, iso, { rootDir: ddir, checkTypes: true });
+    expect(r.ok).toBe(true);
+    expect((r.violations ?? []).some((v) => /object literal to "User"/.test(v))).toBe(true);
+    expect(readFileSync(svcPath, "utf8")).toContain("NOT_IMPLEMENTED: StatsService.compute"); // kaydedilmedi
+  });
+
+  it("owned-DIŞI tipe object-literal cast (`{} as Record<...>`) → ihlal YOK (tsc'nin işi)", () => {
+    reset();
+    const r = tryFillSurgicalBody(svcPath, "StatsService", "compute", `const m = {} as Record<string, number>; return 5;`, iso, { rootDir: ddir, checkTypes: true });
+    expect(r.ok).toBe(true);
+    expect((r.violations ?? []).some((v) => /object literal to/.test(v))).toBe(false);
+  });
 });
 
 describe("fixMissingImportsInFiles — isim çakışması: owned entity node_modules'a TERCİH edilir", () => {

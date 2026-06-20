@@ -325,27 +325,66 @@ function autoCorrectEnumLiterals(method: MethodDeclaration): string[] {
   return fixed;
 }
 
-/** TİP-GİZLEYEN CAST yasağı (forbidden-moves geçidi). `x as any` / `x as unknown`
- *  hem kapalı-dünya üye denetimini (any/unknown ATLANIR — checkMemberAccess satır
- *  ~174) hem tsc'yi kör eder → AI var olmayan bir alana erişip (audit: `(user as
- *  any).password`; User'da `password` yok, `passwordHash` var) bug'ı GİZLER. Bu
- *  cast'leri ihlal say → AI gerçek tipleri (API yüzeyinden) kullanmaya zorlanır.
- *  Çift-cast `as unknown as T`'nin `as unknown` kısmı da yakalanır (kaçış kapısı). */
+/** YASAK CAST geçidi (forbidden-moves). İki sınıf:
+ *
+ *  (a) TİP-GİZLEYEN cast `x as any` / `x as unknown` — hem kapalı-dünya üye denetimini
+ *      (any/unknown ATLANIR — checkMemberAccess satır ~174) hem tsc'yi kör eder → AI var
+ *      olmayan bir alana erişip (audit: `(user as any).password`; User'da `password` yok,
+ *      `passwordHash` var) bug'ı GİZLER. Çift-cast `as unknown as T`'nin `as unknown` kısmı
+ *      da yakalanır (kaçış kapısı).
+ *
+ *  (b) OWNED tipe OBJECT-LITERAL cast `{...} as Entity` — AI'ın uydurma entity/DTO inşa
+ *      deseni (audit: `{ title, uploader: { id }, ... } as Video`). Cast eksik/uyumsuz
+ *      alanları GİZLER ve hata YALNIZ import çözülünce (TS2352) çıkar — fill bunu geç
+ *      görür çünkü tip henüz çözülmemişken cast yalnız "Cannot find name" üretir (elenir).
+ *      Bunu ilk-dolumda yakalamak için: SAF AST (Project/tip-çözümü gerektirmez → izole
+ *      kontrolde ve draft'ta da çalışır). Owned = relative-import edilmiş tip; kütüphane/
+ *      global tipler (`{} as Record<...>`) tsc'nin işi, dokunulmaz. */
 function checkForbiddenCasts(method: MethodDeclaration): string[] {
   const body = method.getBody();
   if (!body) return [];
   const violations: string[] = [];
   const seen = new Set<string>();
+
+  // Owned (relative-import edilmiş) tip adları — kütüphane/global tiplerden ayırt etmek için.
+  const ownedImported = new Set<string>();
+  for (const imp of method.getSourceFile().getImportDeclarations()) {
+    if (!imp.getModuleSpecifierValue().startsWith(".")) continue; // yalnız relative = owned
+    for (const n of imp.getNamedImports()) ownedImported.add(n.getName());
+    const def = imp.getDefaultImport();
+    if (def) ownedImported.add(def.getText());
+  }
+
   for (const as of body.getDescendantsOfKind(SyntaxKind.AsExpression)) {
     const typeText = (as.getTypeNode()?.getText() ?? "").trim();
-    if (!/^(any|unknown)\b/.test(typeText)) continue;
-    const snippet = as.getText().replace(/\s+/g, " ").slice(0, 50);
-    if (seen.has(snippet)) continue;
-    seen.add(snippet);
+
+    // (a) tip-gizleyen cast: as any / as unknown
+    if (/^(any|unknown)\b/.test(typeText)) {
+      const snippet = as.getText().replace(/\s+/g, " ").slice(0, 50);
+      if (seen.has(snippet)) continue;
+      seen.add(snippet);
+      violations.push(
+        `type-dodging cast "as ${typeText}" is not allowed — it hides real type errors ` +
+          `(e.g. reading a field the type does not have). Use the real types from the API surface; if a ` +
+          `value genuinely lacks the member you need, that is a contract problem to surface, not cast away.`,
+      );
+      continue;
+    }
+
+    // (b) owned tipe object-literal cast: `{...} as Entity`
+    let operand = as.getExpression();
+    const paren = operand.asKind(SyntaxKind.ParenthesizedExpression);
+    if (paren) operand = paren.getExpression();
+    if (!operand.asKind(SyntaxKind.ObjectLiteralExpression)) continue;
+    const baseName = typeText.replace(/<[\s\S]*$/, "").replace(/\[\]$/, "").trim();
+    if (!ownedImported.has(baseName)) continue; // kütüphane/global tip → tsc'nin işi
+    if (seen.has(`objlit:${baseName}`)) continue;
+    seen.add(`objlit:${baseName}`);
     violations.push(
-      `type-dodging cast "as ${typeText}" is not allowed — it hides real type errors ` +
-        `(e.g. reading a field the type does not have). Use the real types from the API surface; if a ` +
-        `value genuinely lacks the member you need, that is a contract problem to surface, not cast away.`,
+      `do not cast an object literal to "${baseName}" ("{...} as ${baseName}"). A cast hides missing or ` +
+        `mismatched fields and only fails once the import resolves. Build it properly instead: for a TypeORM ` +
+        `entity use the repository — "this.<entity>Repository.create({...})" (it accepts a partial); for a DTO/` +
+        `plain object, annotate the target ("const x: ${baseName} = {...}") or return it directly so the real type is checked.`,
     );
   }
   return violations;
