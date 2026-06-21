@@ -419,3 +419,49 @@ describe("runToolAgent — dayanıklılık (malformed-JSON / resolve-throw / rou
     expect(r.finalText).toMatch(/videoUrl blocked/); // tools=[] teşhis turu çağrıldı
   });
 });
+
+describe("onActivity — fill agent gözlem akışı (kod/secret sızıntısı YOK)", () => {
+  const FILE = `import { Injectable } from "@nestjs/common";
+class NotFoundException extends Error {}
+
+@Injectable()
+export class UserService {
+  constructor(private readonly userRepository: { findById(id: string): Promise<unknown> }) {}
+
+  async getById(id: string): Promise<unknown> {
+    // @solarch:surgical id=n1#getById
+    // throws: NotFoundException
+    // deps: userRepository
+    throw new Error("NOT_IMPLEMENTED: UserService.getById");
+  }
+}
+`;
+  it("verify_fill aktivitesi yayılır + özet KOD GÖVDESİ taşımaz (yalnız ok/üye)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "act-"));
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src", "user.service.ts"), FILE);
+    const target = selectSkeletons(dir)[0]!;
+    const acts: { tool: string; summary: string; ok?: boolean; member: string }[] = [];
+    const SECRET_CODE = "const u = await this.userRepository.findById(id);\nif (!u) throw new NotFoundException();\nreturn u;";
+    const r = await fillRegion(target, {
+      rootDir: dir,
+      llm: DUMMY_LLM,
+      transport: scriptedTransport([SECRET_CODE], "verify_fill"),
+      skipVerify: true,
+      onActivity: (a) => acts.push({ tool: a.tool, summary: a.summary, ok: a.ok, member: a.member }),
+    });
+    expect(r.status).toBe("filled");
+    const vf = acts.find((a) => a.tool === "verify_fill");
+    expect(vf).toBeDefined();
+    expect(vf!.member).toBe("getById");
+    expect(vf!.ok).toBe(true);
+    expect(vf!.summary).toMatch(/verify_fill/);
+    // GÜVENLİK: hiçbir activity özeti gövde kodunu içermez.
+    for (const a of acts) {
+      expect(a.summary).not.toContain("findById");
+      expect(a.summary).not.toContain("NotFoundException");
+      expect(a.summary).not.toContain("return u");
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

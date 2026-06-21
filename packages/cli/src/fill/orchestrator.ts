@@ -195,6 +195,26 @@ export interface FillOptions {
   onProgress?: (r: FillRegionResult) => void;
   /** Doğrulama/onarım fazı ilerlemesi (proje geneli) — opsiyonel. */
   onPhase?: (p: FillPhase) => void;
+  /** AJAN AKTİVİTESİ (gözlem) — her tool çağrısı için kısa, GÜVENLİ özet (kod/secret YOK).
+   *  opencode-tarzı canlı aktivite akışını besler (frontend "ne yapıyor" gösterir). */
+  onActivity?: (a: FillActivity) => void;
+}
+
+/** Fill ajanının tek bir tool eyleminin GÖZLEM özeti — frontend canlı akışı için.
+ *  GÜVENLİK: summary asla kod gövdesi / secret değer taşımaz (read=path, verify=ok/ihlal-kodu). */
+export interface FillActivity {
+  /** Doldurulan bölge (üye adı) — paralel akışta satırları ayırt etmek için. */
+  member: string;
+  /** Bölgenin dosyası (proje-göreli). */
+  file: string;
+  /** Çağrılan araç. */
+  tool: "read" | "grep" | "glob" | "lookup_members" | "verify_fill";
+  /** İnsan-okur kısa özet (ör. `read src/video/entities/video.entity.ts`, `verify_fill → TS2322 (+1 more)`). */
+  summary: string;
+  /** verify_fill için: gövde yeşil mi? */
+  ok?: boolean;
+  /** verify_fill deneme sırası (1-tabanlı). */
+  attempt?: number;
 }
 
 /** Bölge dolum işlerini DOSYA-bazında paralel koştur: gruplar paralel (concurrency
@@ -324,6 +344,10 @@ async function runRegionAgent(
     exploreBytes += content.length;
     return { content };
   };
+  // GÖZLEM: her tool eyleminin GÜVENLİ özetini canlı akışa yayınla (kod/secret YOK).
+  let verifyAttempt = 0;
+  const act = (tool: FillActivity["tool"], summary: string, extra?: Partial<FillActivity>): void =>
+    opts.onActivity?.({ member: target.member.member, file: target.file, tool, summary, ...extra });
   const resolve: ToolResolver = async (call) => {
     // BİLİNMEYEN TOOL guard: model var olmayan bir araç (ör. list_files) halüsine ederse
     // sessizce verify_fill'e düşüp yanıltıcı "empty code" üretmesin — açıkça söyle.
@@ -335,6 +359,7 @@ async function runRegionAgent(
     if (call.name === "lookup_members") {
       const typeName = typeof call.args?.type === "string" ? call.args.type.trim() : "";
       if (!typeName) return { content: JSON.stringify({ error: "pass an owned type name in `type`" }) };
+      act("lookup_members", `lookup ${typeName}`);
       // Alanları TİP + nullability ile sun (videoUrl: string, description?: string | undefined) →
       // AI yazmadan önce kesin nullability'yi görür. İsim-yalnız liste nullable'ı gizlerdi.
       return { content: formatTypeShape(typeName, lookup(typeName)) };
@@ -350,31 +375,50 @@ async function runRegionAgent(
         const p = typeof call.args?.filePath === "string" ? call.args.filePath : "";
         const offset = typeof call.args?.offset === "number" ? call.args.offset : undefined;
         const limit = typeof call.args?.limit === "number" ? call.args.limit : undefined;
+        act("read", `read ${p}${offset ? ` (from ${offset})` : ""}`); // yalnız yol — içerik/secret YOK
         return explore(readProjectFile(opts.rootDir, p, offset, limit));
       }
       if (call.name === "grep") {
         const pat = typeof call.args?.pattern === "string" ? call.args.pattern : "";
         const inc = typeof call.args?.include === "string" ? call.args.include : undefined;
-        return explore(grepProjectCode(opts.rootDir, pat, inc));
+        const out = grepProjectCode(opts.rootDir, pat, inc);
+        const m = /^Found (\d+)/.exec(out);
+        act("grep", `grep "${pat}"${inc ? ` in ${inc}` : ""} → ${m ? m[1] : "0"} match(es)`);
+        return explore(out);
       }
       const pat = typeof call.args?.pattern === "string" ? call.args.pattern : "";
-      return explore(globProjectFiles(opts.rootDir, pat));
+      const out = globProjectFiles(opts.rootDir, pat);
+      const n = /^No files/.test(out) ? 0 : out.split("\n").filter((l) => l && !l.startsWith("…")).length;
+      act("glob", `glob ${pat} → ${n} file(s)`);
+      return explore(out);
     }
-    // verify_fill: doğrula (apply) + temizse commit.
+    // verify_fill: doğrula (apply) + temizse commit. (activity özeti yalnız ok/ihlal-kodu — KOD YOK.)
+    verifyAttempt++;
     const code = typeof call.args?.code === "string" ? call.args.code.trim() : "";
-    if (!code) return { content: JSON.stringify({ ok: false, violations: ["empty code — pass the method body statements in `code`"] }) };
+    if (!code) {
+      act("verify_fill", "verify_fill → empty code", { ok: false, attempt: verifyAttempt });
+      return { content: JSON.stringify({ ok: false, violations: ["empty code — pass the method body statements in `code`"] }) };
+    }
     const body = stripCodeFences(code);
     const res = apply(body);
     if (!res.ok) {
       toolError = res.error;
+      act("verify_fill", "verify_fill → invalid TypeScript", { ok: false, attempt: verifyAttempt });
       return { content: JSON.stringify({ ok: false, violations: [res.error] }) };
     }
     const corrected = res.corrections && res.corrections.length > 0 ? { corrected: res.corrections } : {};
     if ((res.violations?.length ?? 0) === 0) {
       filledBody = (res.body ?? body).trim();
+      act("verify_fill", "verify_fill → ok", { ok: true, attempt: verifyAttempt });
       return { content: JSON.stringify({ ok: true, ...corrected }), done: true, result: true };
     }
     lastViolations = res.violations;
+    // İhlal özeti: ilk TSxxxx kodu / ilk ihlalin ilk kelimeleri + "(+N more)" — GÜVENLİ, kod gövdesi yok.
+    const v0 = res.violations![0] ?? "violation";
+    const codeM = /TS\d{3,5}/.exec(v0);
+    const head = codeM ? codeM[0] : v0.replace(/\s+/g, " ").slice(0, 40);
+    const more = (res.violations!.length ?? 1) - 1;
+    act("verify_fill", `verify_fill → ${head}${more > 0 ? ` (+${more} more)` : ""}`, { ok: false, attempt: verifyAttempt });
     // THRASH freni: aynı gövde aynı ihlallerle TEKRAR gelirse model döngüde — yaklaşımı
     // değiştirmesi için sertçe uyar (aksi halde maxRounds'a kadar aynı hatayı tekrarlar).
     const sig = (res.violations ?? []).join("|").replace(/\s+/g, " ");

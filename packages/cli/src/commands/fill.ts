@@ -92,6 +92,10 @@ export async function fillCommand(opts: FillCommandOptions): Promise<void> {
     onPhase: opts.json
       ? (p) => emit({ event: "phase", ...p })
       : (p) => printPhase(p),
+    // GÖZLEM: ajan aktivitesi (read/grep/verify_fill…) canlı akış için. Özet GÜVENLİ (kod/secret yok).
+    onActivity: opts.json
+      ? (a) => emit({ event: "activity", member: a.member, file: a.file, tool: a.tool, summary: a.summary, ok: a.ok, attempt: a.attempt })
+      : (a) => console.log(pc.dim(`  · ${a.member}: ${a.summary}`)),
   });
 
   if (opts.json) {
