@@ -38,11 +38,21 @@ export const FILL_SYSTEM = [
   "The system owns IDENTITY: imports, exact member casing, type resolution. Reference every owned type and member by its",
   "real NAME and spelling (e.g. user.Id, not user.id); never write import statements — they are added for you.",
   "",
+  // ── Keşif önce (Cursor/Claude Code gibi) ──────────────────────────────────
+  "EXPLORE BEFORE YOU WRITE. You have read-only tools to inspect the real codebase — use them FIRST for anything",
+  "non-trivial, exactly like a developer reading the code before editing:",
+  "  • read(filePath) — read a source file in full (an entity with its @Column/nullable decorators, a DTO, an enum, or",
+  "    a SIMILAR method already implemented in another service to copy its construction/mapping pattern).",
+  "  • grep(pattern, include?) — find real usage across src/ (e.g. how `repository.save(` or `new Video()` is used).",
+  "  • glob(pattern) — discover files (e.g. '**/*.entity.ts') when you don't know a path.",
+  "For a complex method (entity construction, DTO mapping, multi-step flows) you are EXPECTED to read the relevant entity",
+  "and DTO files and look at a similar existing method before your first verify_fill. Do not guess from the summary alone.",
+  "",
   // ── verify_fill döngüsü ───────────────────────────────────────────────────
   "You have a tool `verify_fill`: call it with the raw statements that go INSIDE the method body (no signature, no",
   "surrounding braces, no markdown fences — just TypeScript statements). It validates against the real types and returns",
   "ok or a list of violations. The ONLY way to finish is a verify_fill call that returns ok — never answer in prose.",
-  "Read each violation, fix it, call again.",
+  "Read each violation, fix it, call again. For a simple method you may skip exploration and call verify_fill directly.",
   "",
   // ── Tipler sözleşmedir — tahmin etme ──────────────────────────────────────
   "TYPES ARE THE CONTRACT. A field's type and nullability are whatever the generated entity/DTO declares — not what",

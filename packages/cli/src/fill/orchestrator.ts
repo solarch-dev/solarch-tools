@@ -25,6 +25,7 @@
 
 import { join } from "node:path";
 import { completeType, DiagnosticsPool, formatTypeShape, readDeclaredSurface, readExpectedTypeHeaders, readFillContext, readProjectCatalog, tryFillSurgicalBody, type CompleteTypeResult, type SurgicalMember, type WriteBodyResult } from "@solarch/ast-core";
+import { read as readProjectFile, grep as grepProjectCode, glob as globProjectFiles } from "./fs-tools.js";
 import { runScan } from "../commands/scan.js";
 import { FILL_SYSTEM, buildFillUser, type FillContext } from "./prompt.js";
 import { stripCodeFences, type LlmConfig } from "./llm.js";
@@ -66,6 +67,62 @@ const LOOKUP_MEMBERS_TOOL: AgentTool = {
     type: "object",
     properties: { type: { type: "string", description: "An owned class/enum/exception name from the API surface." } },
     required: ["type"],
+    additionalProperties: false,
+  },
+};
+
+/* ── CODEBASE KEŞİF ARAÇLARI (opencode / Claude Code'a BİREBİR uyarlı: read/grep/glob) ──
+ * Model yazmadan ÖNCE gerçek kodu incelesin: entity/DTO tanımını TAM okusun, benzer bir
+ * metodun nasıl yazıldığını görsün, kullanım pattern'i arasın. Kapalı bağlam (apiSurface)
+ * karmaşık entity-inşa vakalarında yetmiyordu — model "Video'yu başka yerde nasıl kuruyorlar"
+ * diye bakamıyordu. İsim/format opencode ile aynı (model eğitiminden tanır). Salt-okunur,
+ * `done` döndürmez → loop devam eder; yollar proje-göreli (src/ ağacı). */
+const READ_TOOL: AgentTool = {
+  name: "read",
+  description:
+    "Read a project source file in full to see exactly how something is defined or implemented — an entity with its " +
+    "decorators/nullability, a DTO, an enum, or a similar method already written in another service. The filePath is " +
+    "project-relative (e.g. 'src/video/entities/video.entity.ts'). Contents are returned with each line prefixed by its " +
+    "number as `<line>: <content>`. By default returns up to 2000 lines; use offset/limit for later sections. If unsure " +
+    "of the path, use glob/grep first. Read the real code before constructing entities or mapping DTOs.",
+  parameters: {
+    type: "object",
+    properties: {
+      filePath: { type: "string", description: "Project-relative file path, e.g. src/video/dto/video.dto.ts" },
+      offset: { type: "number", description: "Line number to start from (1-indexed). Optional." },
+      limit: { type: "number", description: "Max lines to read (default 2000). Optional." },
+    },
+    required: ["filePath"],
+    additionalProperties: false,
+  },
+};
+const GREP_TOOL: AgentTool = {
+  name: "grep",
+  description:
+    "Fast content search across the project's src/ tree using a regular expression (full regex syntax). Returns file " +
+    "paths and line numbers with the matching lines. Use it to find REAL usage patterns before you write — e.g. how " +
+    "`videoRepository.save(` is called elsewhere, examples of `new Video()` construction, or where an enum value is " +
+    'used. Filter files with the include parameter (e.g. "*.entity.ts", "*.{ts,tsx}").',
+  parameters: {
+    type: "object",
+    properties: {
+      pattern: { type: "string", description: "The regex pattern to search for in file contents." },
+      include: { type: "string", description: 'Optional file pattern to include (e.g. "*.entity.ts", "*.dto.ts").' },
+    },
+    required: ["pattern"],
+    additionalProperties: false,
+  },
+};
+const GLOB_TOOL: AgentTool = {
+  name: "glob",
+  description:
+    "Fast file pattern matching across the project's src/ tree. Supports glob patterns like '**/*.entity.ts' or " +
+    "'video/*.ts'. Returns matching project-relative file paths. Use it to discover what exists (which entities, DTOs, " +
+    "services, repositories) and find the right file to read.",
+  parameters: {
+    type: "object",
+    properties: { pattern: { type: "string", description: "The glob pattern to match files against, e.g. **/*.dto.ts" } },
+    required: ["pattern"],
     additionalProperties: false,
   },
 };
@@ -264,6 +321,22 @@ async function runRegionAgent(
       // AI yazmadan önce kesin nullability'yi görür. İsim-yalnız liste nullable'ı gizlerdi.
       return { content: formatTypeShape(typeName, lookup(typeName)) };
     }
+    // CODEBASE KEŞİF (read/grep/glob — salt-okunur, loop devam eder) — model gerçek kodu incelesin.
+    if (call.name === "read") {
+      const p = typeof call.args?.filePath === "string" ? call.args.filePath : "";
+      const offset = typeof call.args?.offset === "number" ? call.args.offset : undefined;
+      const limit = typeof call.args?.limit === "number" ? call.args.limit : undefined;
+      return { content: readProjectFile(opts.rootDir, p, offset, limit) };
+    }
+    if (call.name === "grep") {
+      const pat = typeof call.args?.pattern === "string" ? call.args.pattern : "";
+      const inc = typeof call.args?.include === "string" ? call.args.include : undefined;
+      return { content: grepProjectCode(opts.rootDir, pat, inc) };
+    }
+    if (call.name === "glob") {
+      const pat = typeof call.args?.pattern === "string" ? call.args.pattern : "";
+      return { content: globProjectFiles(opts.rootDir, pat) };
+    }
     // verify_fill (varsayılan): doğrula (apply) + temizse commit.
     const code = typeof call.args?.code === "string" ? call.args.code.trim() : "";
     if (!code) return { content: JSON.stringify({ ok: false, violations: ["empty code — pass the method body statements in `code`"] }) };
@@ -290,10 +363,13 @@ async function runRegionAgent(
       transport: opts.transport,
       system: FILL_SYSTEM,
       user: buildFillUser(target.member, ctx, feedback),
-      tools: [VERIFY_FILL_TOOL, LOOKUP_MEMBERS_TOOL],
+      // Keşif araçları (read/grep/glob) + IntelliSense (lookup_members) + verify_fill.
+      tools: [VERIFY_FILL_TOOL, LOOKUP_MEMBERS_TOOL, READ_TOOL, GREP_TOOL, GLOB_TOOL],
       resolve,
-      forceFirstTool: "verify_fill",
-      maxRounds: opts.maxAttempts ?? 5,
+      // forceFirstTool YOK: model ÖNCE keşfetsin (read/grep/glob), sonra yazsın — karmaşık
+      // entity-inşada "körlemesine ilk deneme"yi zorlamak kötüydü. verify_fill yine bitirmenin
+      // TEK yolu (prompt). maxRounds keşif + deneme için cömert (kolay bölge erken biter).
+      maxRounds: opts.maxAttempts ?? 14,
     });
   } catch (e) {
     return { ...base, status: "error", attempts: 0, error: (e as Error).message };
