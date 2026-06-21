@@ -415,6 +415,7 @@ export function methodTypeDiagnostics(method: MethodDeclaration): string[] {
   const seen = new Set<string>();
   for (const d of diags) {
     if (d.start == null || !d.file) continue;
+    if (d.category !== ts.DiagnosticCategory.Error) continue; // yalnız Error — Warning/Suggestion gürültü
     const msg = ts.flattenDiagnosticMessageText(d.messageText, " ");
     if (/Cannot find name/.test(msg)) continue; // eksik import → import-fix'in işi
     const line = d.file.getLineAndCharacterOfPosition(d.start).line + 1;

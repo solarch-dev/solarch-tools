@@ -351,3 +351,71 @@ describe("resolveTypecheckCommand — tsgo flag-gated binary seçimi (SAF, spawn
     rmSync(d, { recursive: true, force: true });
   });
 });
+
+describe("runToolAgent — dayanıklılık (malformed-JSON / resolve-throw / round-aware / diagnosis)", () => {
+  const TOOL = { name: "verify_fill", description: "v", parameters: { type: "object", properties: { code: { type: "string" } }, required: ["code"] } };
+  const READ = { name: "read", description: "r", parameters: { type: "object", properties: { filePath: { type: "string" } }, required: ["filePath"] } };
+  function tcMsg(name: string, rawArgs: string): AgentMessage {
+    return { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name, arguments: rawArgs } }] };
+  }
+
+  it("BOZUK tool-JSON → modele 'not valid JSON' feedback (yanıltıcı empty-code DEĞİL)", async () => {
+    let seenToolMsg = "";
+    let i = 0;
+    const transport: ChatTransport = async (messages) => {
+      i += 1;
+      if (i === 1) return tcMsg("verify_fill", "{code: 'oops' broken"); // geçersiz JSON
+      seenToolMsg = String(messages.filter((m) => m.role === "tool").pop()?.content ?? "");
+      return tcMsg("verify_fill", JSON.stringify({ code: "return 1;" }));
+    };
+    const resolve: ToolResolver = async (c) => (String((c.args as { code?: string })?.code ?? "") ? { content: '{"ok":true}', done: true, result: true } : { content: '{"ok":false}' });
+    const r = await runToolAgent({ transport, system: "s", user: "u", tools: [TOOL], resolve, maxRounds: 3 });
+    expect(seenToolMsg).toMatch(/not valid JSON/);
+    expect(r.result).toBe(true);
+  });
+
+  it("resolve THROW → bölgeyi öldürmez, tool-error olarak döner, loop devam eder", async () => {
+    let i = 0;
+    const transport: ChatTransport = async () => {
+      i += 1;
+      return tcMsg("verify_fill", JSON.stringify({ code: i === 1 ? "boom" : "good" }));
+    };
+    const resolve: ToolResolver = async (c) => {
+      const code = String((c.args as { code?: string })?.code ?? "");
+      if (code === "boom") throw new Error("ts-morph exploded");
+      return { content: '{"ok":true}', done: true, result: true };
+    };
+    const r = await runToolAgent({ transport, system: "s", user: "u", tools: [TOOL], resolve, maxRounds: 4 });
+    expect(r.result).toBe(true); // throw yutuldu, ikinci tur yeşil
+    expect(i).toBe(2);
+  });
+
+  it("round-aware tools: round 1 keşif-only, round 2 verify dahil", async () => {
+    const toolsPerRound: string[][] = [];
+    let i = 0;
+    const transport: ChatTransport = async (_m, tools) => {
+      i += 1;
+      toolsPerRound.push(tools.map((t) => t.name));
+      if (i === 1) return tcMsg("read", JSON.stringify({ filePath: "src/x.ts" }));
+      return tcMsg("verify_fill", JSON.stringify({ code: "return 1;" }));
+    };
+    const resolve: ToolResolver = async (c) => (c.name === "verify_fill" ? { content: '{"ok":true}', done: true, result: true } : { content: "file contents" });
+    const r = await runToolAgent({ transport, system: "s", user: "u", tools: (round) => (round === 1 ? [READ] : [TOOL, READ]), resolve, maxRounds: 4 });
+    expect(toolsPerRound[0]).toEqual(["read"]); // round 1: verify_fill YOK
+    expect(toolsPerRound[1]).toContain("verify_fill"); // round 2: verify var
+    expect(r.result).toBe(true);
+  });
+
+  it("exhausted (hiç done yok) → son bir TEŞHİS turu finalText'e taşınır", async () => {
+    let calls = 0;
+    const transport: ChatTransport = async (messages, tools) => {
+      calls += 1;
+      if (tools.length === 0) return { role: "assistant", content: "VideoDto.videoUrl blocked me; tried direct assign.", tool_calls: [] };
+      return tcMsg("verify_fill", JSON.stringify({ code: "bad" }));
+    };
+    const resolve: ToolResolver = async () => ({ content: '{"ok":false,"violations":["TS2322"]}' }); // hiç done olmaz
+    const r = await runToolAgent({ transport, system: "s", user: "u", tools: [TOOL], resolve, maxRounds: 2 });
+    expect(r.exhausted).toBe(true);
+    expect(r.finalText).toMatch(/videoUrl blocked/); // tools=[] teşhis turu çağrıldı
+  });
+});

@@ -83,7 +83,8 @@ const READ_TOOL: AgentTool = {
     "Read a project source file in full to see exactly how something is defined or implemented — an entity with its " +
     "decorators/nullability, a DTO, an enum, or a similar method already written in another service. The filePath is " +
     "project-relative (e.g. 'src/video/entities/video.entity.ts'). Contents are returned with each line prefixed by its " +
-    "number as `<line>: <content>`. By default returns up to 2000 lines; use offset/limit for later sections. If unsure " +
+    "number as `<line>: <content>`. Entity/DTO/enum files are small — read the whole file at once; do not page through " +
+    "in tiny slices. By default returns up to 2000 lines; use offset/limit only for genuinely large files. If unsure " +
     "of the path, use glob/grep first. Read the real code before constructing entities or mapping DTOs.",
   parameters: {
     type: "object",
@@ -145,6 +146,9 @@ export interface FillRegionResult {
   /** Diske yazılan (doğrulanmış) gövde — status="filled" iken dolu. Sunucu bunu
    *  bölge-bazında kalıcı saklar (re-open'da dolu görünsün, re-fill kaldığı yerden). */
   body?: string;
+  /** Başarısız bölgede modelin son teşhisi ("hangi tip/üye bloketti") — exhausted
+   *  turunda model'den alınır; repair feedback + kullanıcı raporu için. */
+  diagnosis?: string;
 }
 
 export interface FillReport {
@@ -312,7 +316,21 @@ async function runRegionAgent(
   let lastViolations: string[] | undefined;
   let toolError: string | undefined;
   let filledBody: string | undefined; // doğrulanmış gövde (kalıcı sakla)
+  let exploreBytes = 0; // KEŞİF EKONOMİSİ: tool çıktısı birikimi (context-patlamasını önle)
+  let prevViolSig: string | null = null; // THRASH: aynı başarısız gövdeyi tekrar etme tespiti
+  let thrash = 0;
+  const EXPLORE_BUDGET = 128_000; // bu eşik aşılınca keşif kapanır, verify_fill'e yönlendirilir
+  const explore = (content: string): { content: string } => {
+    exploreBytes += content.length;
+    return { content };
+  };
   const resolve: ToolResolver = async (call) => {
+    // BİLİNMEYEN TOOL guard: model var olmayan bir araç (ör. list_files) halüsine ederse
+    // sessizce verify_fill'e düşüp yanıltıcı "empty code" üretmesin — açıkça söyle.
+    const KNOWN = new Set(["verify_fill", "lookup_members", "read", "grep", "glob"]);
+    if (!KNOWN.has(call.name)) {
+      return { content: JSON.stringify({ error: `unknown tool "${call.name}". Available: verify_fill, lookup_members, read, grep, glob.` }) };
+    }
     // lookup_members (IntelliSense, salt-okunur): GERÇEK üyeleri döndür, loop devam eder.
     if (call.name === "lookup_members") {
       const typeName = typeof call.args?.type === "string" ? call.args.type.trim() : "";
@@ -322,22 +340,27 @@ async function runRegionAgent(
       return { content: formatTypeShape(typeName, lookup(typeName)) };
     }
     // CODEBASE KEŞİF (read/grep/glob — salt-okunur, loop devam eder) — model gerçek kodu incelesin.
-    if (call.name === "read") {
-      const p = typeof call.args?.filePath === "string" ? call.args.filePath : "";
-      const offset = typeof call.args?.offset === "number" ? call.args.offset : undefined;
-      const limit = typeof call.args?.limit === "number" ? call.args.limit : undefined;
-      return { content: readProjectFile(opts.rootDir, p, offset, limit) };
-    }
-    if (call.name === "grep") {
+    // KEŞİF BÜTÇESİ: birikim eşiği aşıldıysa daha fazla keşif yok → verify_fill'e yönlendir
+    // (yeterli bağlam toplandı; aksi halde 14-tur birikimi context-limit'i patlatabilir).
+    if (call.name === "read" || call.name === "grep" || call.name === "glob") {
+      if (exploreBytes > EXPLORE_BUDGET) {
+        return { content: JSON.stringify({ error: "exploration budget exhausted — you have enough context now. Write the body and call verify_fill." }) };
+      }
+      if (call.name === "read") {
+        const p = typeof call.args?.filePath === "string" ? call.args.filePath : "";
+        const offset = typeof call.args?.offset === "number" ? call.args.offset : undefined;
+        const limit = typeof call.args?.limit === "number" ? call.args.limit : undefined;
+        return explore(readProjectFile(opts.rootDir, p, offset, limit));
+      }
+      if (call.name === "grep") {
+        const pat = typeof call.args?.pattern === "string" ? call.args.pattern : "";
+        const inc = typeof call.args?.include === "string" ? call.args.include : undefined;
+        return explore(grepProjectCode(opts.rootDir, pat, inc));
+      }
       const pat = typeof call.args?.pattern === "string" ? call.args.pattern : "";
-      const inc = typeof call.args?.include === "string" ? call.args.include : undefined;
-      return { content: grepProjectCode(opts.rootDir, pat, inc) };
+      return explore(globProjectFiles(opts.rootDir, pat));
     }
-    if (call.name === "glob") {
-      const pat = typeof call.args?.pattern === "string" ? call.args.pattern : "";
-      return { content: globProjectFiles(opts.rootDir, pat) };
-    }
-    // verify_fill (varsayılan): doğrula (apply) + temizse commit.
+    // verify_fill: doğrula (apply) + temizse commit.
     const code = typeof call.args?.code === "string" ? call.args.code.trim() : "";
     if (!code) return { content: JSON.stringify({ ok: false, violations: ["empty code — pass the method body statements in `code`"] }) };
     const body = stripCodeFences(code);
@@ -346,15 +369,37 @@ async function runRegionAgent(
       toolError = res.error;
       return { content: JSON.stringify({ ok: false, violations: [res.error] }) };
     }
-    // Deterministik snap'leri (user.id -> user.Id) agent'a BİLGİ olarak ekle (ihlal değil).
     const corrected = res.corrections && res.corrections.length > 0 ? { corrected: res.corrections } : {};
     if ((res.violations?.length ?? 0) === 0) {
       filledBody = (res.body ?? body).trim();
       return { content: JSON.stringify({ ok: true, ...corrected }), done: true, result: true };
     }
     lastViolations = res.violations;
-    return { content: JSON.stringify({ ok: false, violations: res.violations, ...corrected }) };
+    // THRASH freni: aynı gövde aynı ihlallerle TEKRAR gelirse model döngüde — yaklaşımı
+    // değiştirmesi için sertçe uyar (aksi halde maxRounds'a kadar aynı hatayı tekrarlar).
+    const sig = (res.violations ?? []).join("|").replace(/\s+/g, " ");
+    const extra: string[] = [];
+    if (sig === prevViolSig) {
+      thrash++;
+      extra.push(
+        thrash >= 2
+          ? "You have now submitted the SAME failing body multiple times. Stop. Re-read the failing types with read/lookup_members and write a DIFFERENT body — do not resubmit this."
+          : "This is the SAME body that already failed with the SAME errors. Do not resubmit it — change your approach (inspect the real types, bridge nullability, fix the construction).",
+      );
+    } else {
+      thrash = 0;
+    }
+    prevViolSig = sig;
+    return { content: JSON.stringify({ ok: false, violations: [...(res.violations ?? []), ...extra] }) };
   };
+
+  // ZORLUK sinyali: owned beklenen-tip VAR ya da declared throws/deps VAR → karmaşık bölge.
+  // Zor bölgede round 1'de verify_fill'i GİZLE → model keşfi (read/grep/glob/lookup) yapısal
+  // olarak ÖNCE yapar (prose-ricasını kısıta çevirir); round≥2'de tüm araçlar. Basit bölge
+  // tüm araçları her zaman görür (gereksiz keşif turu harcamaz).
+  const hard = (ctx.expectedTypes?.trim().length ?? 0) > 0 || (target.member.throws?.length ?? 0) + (target.member.deps?.length ?? 0) > 0;
+  const ALL_TOOLS = [VERIFY_FILL_TOOL, LOOKUP_MEMBERS_TOOL, READ_TOOL, GREP_TOOL, GLOB_TOOL];
+  const EXPLORE_ONLY = [READ_TOOL, GREP_TOOL, GLOB_TOOL, LOOKUP_MEMBERS_TOOL];
 
   let agent;
   try {
@@ -363,12 +408,10 @@ async function runRegionAgent(
       transport: opts.transport,
       system: FILL_SYSTEM,
       user: buildFillUser(target.member, ctx, feedback),
-      // Keşif araçları (read/grep/glob) + IntelliSense (lookup_members) + verify_fill.
-      tools: [VERIFY_FILL_TOOL, LOOKUP_MEMBERS_TOOL, READ_TOOL, GREP_TOOL, GLOB_TOOL],
+      tools: hard ? (round: number) => (round === 1 ? EXPLORE_ONLY : ALL_TOOLS) : ALL_TOOLS,
       resolve,
-      // forceFirstTool YOK: model ÖNCE keşfetsin (read/grep/glob), sonra yazsın — karmaşık
-      // entity-inşada "körlemesine ilk deneme"yi zorlamak kötüydü. verify_fill yine bitirmenin
-      // TEK yolu (prompt). maxRounds keşif + deneme için cömert (kolay bölge erken biter).
+      // forceFirstTool YOK: verify_fill bitirmenin TEK yolu (prompt). Zor bölgede keşif
+      // round-aware tool setiyle yapısal zorlanır. maxRounds keşif+deneme için cömert.
       maxRounds: opts.maxAttempts ?? 14,
     });
   } catch (e) {
@@ -376,9 +419,9 @@ async function runRegionAgent(
   }
 
   if (agent.result === true) return { ...base, status: "filled", attempts: agent.rounds, body: filledBody };
-  if (toolError && !lastViolations) return { ...base, status: "error", attempts: agent.rounds, error: toolError };
+  if (toolError && !lastViolations) return { ...base, status: "error", attempts: agent.rounds, error: toolError, diagnosis: agent.finalText };
   // Yeşile ulaşamadı → commit edilmedi (disk/havuz önceki gövdeyi tutar).
-  return { ...base, status: "violation", attempts: agent.rounds, violations: lastViolations };
+  return { ...base, status: "violation", attempts: agent.rounds, violations: lastViolations, diagnosis: agent.finalText };
 }
 
 /** Tüm seçili iskeletleri doldur → tsc-repair turları → test geçidi. */
@@ -439,6 +482,8 @@ export async function fillProject(opts: FillOptions): Promise<FillReport> {
           const feedback = [
             `tsc errors in ${rp.file} — fix your method so the file compiles:`,
             ...rp.problems.slice(0, 12).map((p) => `${p.message} (TS${p.code})`),
+            // 12'den fazla varsa modele KAÇ tane kaldığını söyle (yoksa erken pes/yanlış öncelik).
+            ...(rp.problems.length > 12 ? [`… and ${rp.problems.length - 12} more error(s)`] : []),
           ];
           const rr = await repairRegionInPool(target, opts, pool, feedback);
           results.set(`${rp.file}#${rp.member}`, rr);

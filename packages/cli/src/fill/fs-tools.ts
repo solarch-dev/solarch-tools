@@ -115,7 +115,9 @@ export function read(rootDir: string, filePath: string, offset?: number, limit?:
     return `${start + i + 1}: ${line}`;
   });
   const head = `${relPathOf(rootDir, abs)} (lines ${start + 1}-${end} of ${all.length}):`;
-  const tail = end < all.length ? `\n… (${all.length - end} more lines — call read again with offset ${end + 1})` : "";
+  // "Daha var" davetini yalnız GERÇEKTEN büyük dosyada ver — küçük dosyada (entity/DTO)
+  // küçük limit verilse bile zincir-okumaya çağırmasın (read the whole file at once).
+  const tail = end < all.length && all.length > 400 ? `\n… (${all.length - end} more lines — call read again with offset ${end + 1})` : "";
   return `${head}\n${numbered.join("\n")}${tail}`;
 }
 
@@ -174,6 +176,6 @@ export function glob(rootDir: string, pattern: string): string {
     .filter((rp) => re.test(rp) || re.test(rp.replace(/^src\//, "")));
   if (matched.length === 0) return `No files matching "${pattern}"`;
   const shown = matched.slice(0, MAX_GLOB);
-  const more = matched.length > MAX_GLOB ? `\n… (${matched.length - MAX_GLOB} more)` : "";
+  const more = matched.length > MAX_GLOB ? `\n… (${matched.length - MAX_GLOB} more — use a more specific glob like 'dir/**/*.entity.ts')` : "";
   return shown.join("\n") + more;
 }

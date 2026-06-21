@@ -54,6 +54,13 @@ export function fetchTransport(config: LlmConfig, timeoutMs = 90_000): ChatTrans
   return (messages, tools, forceTool) => chatWithTools(config, messages, tools, timeoutMs, forceTool);
 }
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Geçici (retryable) HTTP durumları — kapasite/ağ kaynaklı; backoff ile tekrar denenir.
+ *  401/403/404/413/422 ve thinking-mode dışı 400 KALICIDIR (retry edilmez). */
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 529]);
+const MAX_RETRIES = 2;
+
 async function chatWithTools(
   config: LlmConfig,
   messages: RawMessage[],
@@ -63,7 +70,9 @@ async function chatWithTools(
 ): Promise<RawMessage> {
   const toolDefs = tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
 
-  const post = async (toolChoice: unknown): Promise<{ status: number; detail: string; msg?: RawMessage }> => {
+  // Tek POST — durum + (retryable ise) Retry-After saniyesini taşır. AbortError (timeout)/
+  // ağ hatası status=0 olarak işaretlenir (retryable). Yanıt parse hatası 200 ama msg yok.
+  const post = async (toolChoice: unknown): Promise<{ status: number; detail: string; retryAfter?: number; msg?: RawMessage }> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -73,22 +82,37 @@ async function chatWithTools(
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
         body: JSON.stringify({ model: config.model, messages, temperature: 0, stream: false, tools: toolDefs, tool_choice: toolChoice }),
       });
-      if (!res.ok) return { status: res.status, detail: (await res.text().catch(() => "")).slice(0, 300) };
+      if (!res.ok) {
+        const ra = Number(res.headers.get("retry-after"));
+        return { status: res.status, detail: (await res.text().catch(() => "")).slice(0, 300), retryAfter: Number.isFinite(ra) ? ra : undefined };
+      }
       const data = (await res.json()) as { choices?: { message?: RawMessage }[] };
       return { status: 200, detail: "", msg: data.choices?.[0]?.message };
+    } catch (e) {
+      // AbortError (timeout) / network → geçici, retry edilebilir (status 0).
+      return { status: 0, detail: (e as Error).message || "network/timeout" };
     } finally {
       clearTimeout(timer);
     }
   };
 
-  // forceTool: tool çağrısını GARANTİLE (deterministik). Ama "thinking" modeller
-  // (deepseek-v4-pro) zorunlu tool_choice'u reddeder (400) — o durumda "auto"'ya
-  // şeffafça düş. Böylece hem reasoning hem non-reasoning modeller çalışır.
-  let r = await post(forceTool ? { type: "function", function: { name: forceTool } } : "auto");
-  if (r.status === 400 && forceTool && /tool_choice|thinking mode/i.test(r.detail)) {
-    r = await post("auto");
+  // forceTool: tool çağrısını GARANTİLE. Ama "thinking" modeller (deepseek-v4-pro) zorunlu
+  // tool_choice'u reddeder (400) → "auto"'ya şeffafça düş (hem reasoning hem non-reasoning çalışır).
+  const call = async (): Promise<{ status: number; detail: string; retryAfter?: number; msg?: RawMessage }> => {
+    let r = await post(forceTool ? { type: "function", function: { name: forceTool } } : "auto");
+    if (r.status === 400 && forceTool && /tool_choice|thinking mode/i.test(r.detail)) r = await post("auto");
+    return r;
+  };
+
+  // GEÇİCİ HATA RETRY: 429/5xx/timeout/ağ → Retry-After ya da jitter'lı backoff ile 2 tekrar.
+  // Kalıcı hatalar (auth/4xx) anında fırlar. Eskiden tek fetch → tek 503 dalgası bölgeyi öldürüyordu.
+  let r = await call();
+  for (let attempt = 1; attempt <= MAX_RETRIES && (r.status === 0 || RETRYABLE_STATUS.has(r.status)); attempt++) {
+    const backoff = r.retryAfter != null ? r.retryAfter * 1000 : Math.min(500 * 2 ** attempt * (0.8 + Math.random() * 0.4), 10_000);
+    await sleep(backoff);
+    r = await call();
   }
-  if (r.status !== 200) throw new Error(`LLM call failed (${r.status} ${config.model}): ${r.detail}`);
+  if (r.status !== 200) throw new Error(`LLM call failed (${r.status || "network"} ${config.model}): ${r.detail}`);
   if (!r.msg) throw new Error("LLM returned no message.");
   return r.msg;
 }
@@ -112,7 +136,9 @@ export async function runToolAgent(opts: {
   transport?: ChatTransport;
   system: string;
   user: string;
-  tools: AgentTool[];
+  /** Araç seti SABİT dizi VEYA tur-bilinçli fabrika (zor bölgede round 1'de keşfi
+   *  yapısal zorlamak için: round 1 = yalnız keşif araçları, round≥2 = hepsi). */
+  tools: AgentTool[] | ((round: number) => AgentTool[]);
   resolve: ToolResolver;
   /** İlk /chat çağrısında zorunlu kılınacak tool adı (genelde tek verify tool'u). */
   forceFirstTool?: string;
@@ -123,6 +149,7 @@ export async function runToolAgent(opts: {
   const timeoutMs = opts.timeoutMs ?? 90_000;
   const transport = opts.transport ?? (opts.config ? fetchTransport(opts.config, timeoutMs) : undefined);
   if (!transport) throw new Error("runToolAgent needs either `config` or `transport`.");
+  const toolsFor = (round: number): AgentTool[] => (typeof opts.tools === "function" ? opts.tools(round) : opts.tools);
   const messages: RawMessage[] = [
     { role: "system", content: opts.system },
     { role: "user", content: opts.user },
@@ -130,7 +157,7 @@ export async function runToolAgent(opts: {
 
   for (let round = 1; round <= maxRounds; round++) {
     const force = round === 1 ? opts.forceFirstTool : undefined;
-    const msg = await transport(messages, opts.tools, force);
+    const msg = await transport(messages, toolsFor(round), force);
     messages.push({ role: "assistant", content: msg.content ?? "", tool_calls: msg.tool_calls });
 
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
@@ -145,8 +172,28 @@ export async function runToolAgent(opts: {
     let doneResult: unknown;
     let gotDone = false;
     for (const tc of msg.tool_calls) {
-      const call: ToolInvocation = { id: tc.id, name: tc.function.name, args: parseArgs(tc.function.arguments) };
-      const r = await opts.resolve(call);
+      // BOZUK tool-JSON'ı AÇIKÇA bildir: boş args = zero-arg toleransı ({}), boş-olmayan ama
+      // geçersiz JSON → araç-bazlı yanıltıcı mesaj ("empty code") yerine asıl sebebi söyle.
+      const raw = tc.function.arguments ?? "";
+      const args = raw.trim() === "" ? {} : parseArgs(raw);
+      if (args === null) {
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error: "arguments were not valid JSON — resend as a single JSON object", received: raw.slice(0, 200) }),
+        });
+        continue;
+      }
+      const call: ToolInvocation = { id: tc.id, name: tc.function.name, args };
+      let r: { content: string; done?: boolean; result?: unknown };
+      try {
+        r = await opts.resolve(call);
+      } catch (e) {
+        // resolve içi throw (ör. ts-morph completeType/applyBody) TÜM bölgeyi öldürmesin —
+        // tool-error olarak modele dön, loop devam etsin.
+        messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify({ error: `tool "${call.name}" failed: ${(e as Error).message}` }) });
+        continue;
+      }
       messages.push({ role: "tool", tool_call_id: tc.id, content: r.content });
       if (r.done) {
         gotDone = true;
@@ -155,5 +202,19 @@ export async function runToolAgent(opts: {
     }
     if (gotDone) return { rounds: round, result: doneResult };
   }
-  return { rounds: maxRounds, exhausted: true };
+
+  // EXHAUSTED + tool çağrıları boyunca hiç done olmadı → son bir TEŞHİS turu (force YOK,
+  // araç YOK → model prose ile cevaplar): neyin bloketttiğini özetlet, finalText'e taşı.
+  // Yalnız başarısız bölgelerde 1 ekstra çağrı; repair feedback + kullanıcı raporu zenginleşir.
+  let diagnosis: string | undefined;
+  try {
+    const d = await transport(
+      [...messages, { role: "user", content: "You did not complete the fill. In ONE sentence: which owned type or member blocked you, and what did you try? No tool call — just the sentence." }],
+      [],
+    );
+    diagnosis = d.content ?? undefined;
+  } catch {
+    /* teşhis en iyi çaba — başarısızlığı bozmaz */
+  }
+  return { rounds: maxRounds, exhausted: true, finalText: diagnosis };
 }

@@ -91,6 +91,7 @@ export class DiagnosticsPool {
       }
       for (const d of diags) {
         if (d.start == null || !d.file) continue;
+        if (d.category !== ts.DiagnosticCategory.Error) continue; // yalnız Error — Warning/Suggestion gürültü
         const message = ts.flattenDiagnosticMessageText(d.messageText, " ");
         if (/Cannot find name/.test(message)) continue; // import-fixer'ın işi
         const line = d.file.getLineAndCharacterOfPosition(d.start).line + 1;

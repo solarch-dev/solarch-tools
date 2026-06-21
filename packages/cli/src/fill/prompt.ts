@@ -47,12 +47,18 @@ export const FILL_SYSTEM = [
   "  • glob(pattern) — discover files (e.g. '**/*.entity.ts') when you don't know a path.",
   "For a complex method (entity construction, DTO mapping, multi-step flows) you are EXPECTED to read the relevant entity",
   "and DTO files and look at a similar existing method before your first verify_fill. Do not guess from the summary alone.",
+  "BE ECONOMICAL: use grep/glob to LOCATE, then read the ONE relevant file in full — never re-read what you've already",
+  "seen, and don't read more than ~2-3 files before your first verify_fill. When you need several files at once (entity +",
+  "DTO + a similar method), request them as a single batch of parallel tool calls. Order of work: locate → confirm the",
+  "shapes you're unsure of → verify_fill, then iterate on its exact violations (don't re-explore what a violation already told you).",
   "",
   // ── verify_fill döngüsü ───────────────────────────────────────────────────
   "You have a tool `verify_fill`: call it with the raw statements that go INSIDE the method body (no signature, no",
   "surrounding braces, no markdown fences — just TypeScript statements). It validates against the real types and returns",
   "ok or a list of violations. The ONLY way to finish is a verify_fill call that returns ok — never answer in prose.",
   "Read each violation, fix it, call again. For a simple method you may skip exploration and call verify_fill directly.",
+  "Code that appears only in your text reply is DISCARDED — nothing is saved or checked until you pass it to verify_fill.",
+  "A prose answer ends your turn with the method body still empty (a failed fill). Always finish through verify_fill.",
   "",
   // ── Tipler sözleşmedir — tahmin etme ──────────────────────────────────────
   "TYPES ARE THE CONTRACT. A field's type and nullability are whatever the generated entity/DTO declares — not what",
