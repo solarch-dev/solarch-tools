@@ -971,6 +971,10 @@ function describeClass(cls: ClassDeclaration): string {
     .map((p) => {
       const pname = p.getName();
       const type = cleanType(p.getTypeNode()?.getText() ?? "unknown");
+      // NULLABILITY proaktif: `videoUrl?: string` ilk prompt'ta `?` ile görünsün (eskiden
+      // düz `videoUrl: string` → model nullable kaynağı zorunlu hedefe köprüsüz atıp ilk turu
+      // harcıyordu). completeTypeFromSf ile AYNI kural: question-token VEYA tip undefined/null içerir.
+      const opt = p.hasQuestionToken() || /\b(undefined|null)\b/.test(type) ? "?" : "";
       const decos = p.getDecorators().map((d) => d.getName());
       const rel = decos.find((d) => RELATION_DECOS.has(d));
       if (rel) {
@@ -990,10 +994,10 @@ function describeClass(cls: ClassDeclaration): string {
         } catch {
           /* çözülemedi → generic etiket */
         }
-        return `${pname}: ${type} (relation @${rel} — read via ${pname}.<field>${allowed}; do NOT invent a flat ${pname}Name/${pname}Id)`;
+        return `${pname}${opt}: ${type} (relation @${rel} — read via ${pname}.<field>${allowed}; do NOT invent a flat ${pname}Name/${pname}Id)`;
       }
-      if (/Id$/.test(pname) && /\bstring\b/.test(type)) return `${pname}: ${type} (fk scalar)`;
-      return `${pname}: ${type}`;
+      if (/Id$/.test(pname) && /\bstring\b/.test(type)) return `${pname}${opt}: ${type} (fk scalar)`;
+      return `${pname}${opt}: ${type}`;
     });
   const lines = [`class ${name} { constructor(${ctorParams}) }`];
   if (methods.length) lines.push(`  methods: ${methods.join("; ")}`);

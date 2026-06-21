@@ -252,7 +252,7 @@ describe("readExpectedTypeHeaders — ChatLSP 'headers': metodun ÜRETMESİ/TÜK
   );
   writeFileSync(
     join(hdir, "src", "profile.dto.ts"),
-    `import { RoleDto } from "./role.dto";\nexport class ProfileDto {\n  Id!: string;\n  displayName!: string;\n  role!: RoleDto;\n}\n`,
+    `import { RoleDto } from "./role.dto";\nexport class ProfileDto {\n  Id!: string;\n  displayName!: string;\n  avatarUrl?: string;\n  role!: RoleDto;\n}\n`,
   );
   const svcPath = join(hdir, "src", "account.service.ts");
   writeFileSync(
@@ -286,6 +286,13 @@ describe("readExpectedTypeHeaders — ChatLSP 'headers': metodun ÜRETMESİ/TÜK
     const h = readExpectedTypeHeaders(svcPath, "AccountService", "getProfile");
     expect(h).toContain("class RoleDto");
     expect(h).toMatch(/code.*label|label.*code/s);
+  });
+
+  it("NULLABILITY proaktif: optional alan ilk prompt'ta `?` ile görünür (zorunlu alan `?`'siz)", () => {
+    const h = readExpectedTypeHeaders(svcPath, "AccountService", "getProfile");
+    expect(h).toContain("avatarUrl?: string"); // nullable → ? ile (köprü gerektiğini önceden görür)
+    expect(h).toMatch(/displayName: string/); // zorunlu → ? yok
+    expect(h).not.toContain("avatarUrl: string"); // ?'siz hâli OLMAMALI
   });
 
   it("parametre tipini (owned enum) describe eder", () => {

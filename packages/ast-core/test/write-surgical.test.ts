@@ -211,7 +211,8 @@ export class UserService {
     expect(surface).toMatch(/class NotFoundException \{ constructor\(\) \}/);
   });
   it("relation'ı (@ManyToOne) etiketler — AI flat alan (customerName) uydurmasın", () => {
-    expect(surface).toMatch(/customer: User \(relation @ManyToOne/);
+    // nullable relation → `customer?: User` (proaktif nullability); `?` opsiyonel eşleşir.
+    expect(surface).toMatch(/customer\??: User \(relation @ManyToOne/);
     expect(surface).toContain("customerId: string (fk scalar)");
   });
   it("Observable dönen metodu işaretler (firstValueFrom)", () => {
@@ -278,7 +279,7 @@ export class ComplaintService {
 
   it("grounding: ilişki hedefinin GERÇEK üyelerini listeler (generic .name değil)", () => {
     const surface = readDeclaredSurface(join(dir, "src", "complaint.service.ts"));
-    expect(surface).toContain("customer: User (relation @");
+    expect(surface).toMatch(/customer\??: User \(relation @/); // nullable relation → `?` olabilir
     expect(surface).toContain("access ONLY these:");
     expect(surface).toContain("fullName"); // hedef tipin gerçek üyesi listelendi
     expect(surface).not.toContain("e.g. customer.name"); // yanıltıcı generic ipucu kalktı
