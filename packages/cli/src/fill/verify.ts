@@ -22,12 +22,30 @@ function run(cmd: string, args: string[], cwd: string): { code: number; output: 
   return { code: r.status ?? (r.error ? 1 : 0), output };
 }
 
-/** `tsc --noEmit` — projenin yerel tsc'si varsa onu, yoksa npx ile. */
-export function runTypecheck(rootDir: string): VerifyResult {
+/** Type-check komutunu (binary + args) çöz — SAF, spawn'sız (test edilebilir).
+ *
+ *  SOLARCH_USE_TSGO=1 ise TypeScript 7.0 native derleyici (`tsgo`, @typescript/native-preview)
+ *  seçilir — tip-kontrol semantiği TS 6.0 ile BİREBİR aynı, ~9x daha hızlı (soğuk tam-proje geçidi).
+ *  Çıktı formatı (`file(line,col): error TSxxxx`) + exit-code aynı → retry parse'i değişmez. tsgo
+ *  `.bin` shim'i tsc gibi shell-wrapper; çağıran `run()` shell:false ile DOĞRUDAN spawn eder.
+ *  tsgo istendi ama yoksa → yerel tsc'ye GÜVENLİ GERİ DÜŞÜŞ (geçit asla kırılmaz); pre-release
+ *  olduğundan varsayılan tsc. tsgo TS 7.0 → tsconfig baseUrl'siz olmalı (scaffold TS7-uyumlu üretir). */
+export function resolveTypecheckCommand(
+  rootDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { cmd: string; args: string[] } {
+  const useTsgo = env.SOLARCH_USE_TSGO === "1";
+  const localTsgo = join(rootDir, "node_modules", ".bin", "tsgo");
   const localTsc = join(rootDir, "node_modules", ".bin", "tsc");
-  const { code, output } = existsSync(localTsc)
-    ? run(localTsc, ["--noEmit"], rootDir)
-    : run("npx", ["--no-install", "tsc", "--noEmit"], rootDir);
+  if (useTsgo && existsSync(localTsgo)) return { cmd: localTsgo, args: ["--noEmit"] };
+  if (existsSync(localTsc)) return { cmd: localTsc, args: ["--noEmit"] }; // tsgo yoksa güvenli geri düşüş
+  return { cmd: "npx", args: ["--no-install", useTsgo ? "tsgo" : "tsc", "--noEmit"] };
+}
+
+/** `<tsc|tsgo> --noEmit` — projenin yerel binary'si varsa onu, yoksa npx ile (bkz. resolveTypecheckCommand). */
+export function runTypecheck(rootDir: string): VerifyResult {
+  const { cmd, args } = resolveTypecheckCommand(rootDir);
+  const { code, output } = run(cmd, args, rootDir);
   return { ok: code === 0, output: output || (code === 0 ? "typecheck clean" : "typecheck failed") };
 }
 

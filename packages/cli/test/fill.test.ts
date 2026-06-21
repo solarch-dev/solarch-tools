@@ -11,6 +11,7 @@ import { buildFillUser, FILL_SYSTEM } from "../src/fill/prompt.js";
 import { runToolAgent, type AgentMessage, type ChatTransport, type ToolResolver } from "../src/fill/agent.js";
 import { fillProject, fillRegion, selectSkeletons } from "../src/fill/orchestrator.js";
 import { generateSpecForService, SPEC_SYSTEM } from "../src/fill/spec.js";
+import { resolveTypecheckCommand } from "../src/fill/verify.js";
 import type { SurgicalMember } from "@solarch/ast-core";
 
 const DUMMY_LLM = { baseUrl: "https://x/v1", model: "test", apiKey: "k" };
@@ -309,6 +310,44 @@ describe("generateSpecForService (scripted transport, jest yok)", () => {
     const spec = readFileSync(join(d, "src", "order.service.spec.ts"), "utf8");
     expect(spec).toContain("describe('OrderService'");
     expect(spec).not.toContain("```"); // çitler soyuldu
+    rmSync(d, { recursive: true, force: true });
+  });
+});
+
+describe("resolveTypecheckCommand — tsgo flag-gated binary seçimi (SAF, spawn'sız)", () => {
+  function projectWithBins(bins: string[]): string {
+    const d = mkdtempSync(join(tmpdir(), "tcc-"));
+    mkdirSync(join(d, "node_modules", ".bin"), { recursive: true });
+    for (const b of bins) writeFileSync(join(d, "node_modules", ".bin", b), "#!/bin/sh\n");
+    return d;
+  }
+
+  it("flag YOK → yerel tsc seçilir (varsayılan, davranış değişmez)", () => {
+    const d = projectWithBins(["tsc", "tsgo"]);
+    const { cmd, args } = resolveTypecheckCommand(d, {});
+    expect(cmd.endsWith("/tsc")).toBe(true);
+    expect(args).toEqual(["--noEmit"]);
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it("SOLARCH_USE_TSGO=1 + tsgo VAR → tsgo seçilir", () => {
+    const d = projectWithBins(["tsc", "tsgo"]);
+    const { cmd } = resolveTypecheckCommand(d, { SOLARCH_USE_TSGO: "1" });
+    expect(cmd.endsWith("/tsgo")).toBe(true);
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it("SOLARCH_USE_TSGO=1 ama tsgo YOK → yerel tsc'ye GÜVENLİ GERİ DÜŞÜŞ (geçit kırılmaz)", () => {
+    const d = projectWithBins(["tsc"]); // tsgo yok
+    const { cmd } = resolveTypecheckCommand(d, { SOLARCH_USE_TSGO: "1" });
+    expect(cmd.endsWith("/tsc")).toBe(true);
+    rmSync(d, { recursive: true, force: true });
+  });
+
+  it("yerel binary HİÇ yok → npx fallback (flag'e göre tsc/tsgo adı)", () => {
+    const d = projectWithBins([]); // ne tsc ne tsgo
+    expect(resolveTypecheckCommand(d, {}).args).toEqual(["--no-install", "tsc", "--noEmit"]);
+    expect(resolveTypecheckCommand(d, { SOLARCH_USE_TSGO: "1" }).args).toEqual(["--no-install", "tsgo", "--noEmit"]);
     rmSync(d, { recursive: true, force: true });
   });
 });
