@@ -199,6 +199,21 @@ describe("buildPushPlan", () => {
     // n2 cloud'dan silinmiş → Repository yeni node olarak planlanır.
     expect(plan.newNodes.map((n) => n.key)).toEqual(["Repository:usersrepository"]);
   });
+
+  it("removals verilmezse plan hiçbir şey silmez (varsayılan additif-güvenli)", () => {
+    const plan = buildPushPlan(asIs(), toBe(), RULES, FULL_MATCH);
+    expect(plan.nodesToRemove).toEqual([]);
+    expect(plan.edgesToRemove).toEqual([]);
+  });
+
+  it("removals iletilince plana iliştirilir; yalnız silme varsa plan boş değildir", () => {
+    const cloudNode = toBe().nodes[1]!; // n2 Repository
+    const cloudEdge = toBe().edges[0]!; // e1
+    const plan = buildPushPlan(asIs(), toBe(), RULES, FULL_MATCH, { nodes: [cloudNode], edges: [cloudEdge] });
+    expect(plan.nodesToRemove.map((n) => n.id)).toEqual(["n2"]);
+    expect(plan.edgesToRemove.map((e) => e.id)).toEqual(["e1"]);
+    expect(planIsEmpty(plan)).toBe(false);
+  });
 });
 
 /* ── push retry akışı (API mock) ─────────────────────────────────── */
@@ -321,5 +336,91 @@ describe("pushCommand — revizyon çatışması retry", () => {
     expect(fakeApi.applyGraph).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
+  });
+});
+
+/* ── push --prune (silme yayılımı) ───────────────────────────────── */
+
+describe("pushCommand — --prune silme yayılımı", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "solarch-prune-"));
+    writeFileSync(join(dir, "solarch.json"), JSON.stringify({ projectId: "p1", bindings: [] }));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  /** Önceki koşudan iki node da map.json'da; kod artık yalnız Service → Repository silinmiş. */
+  async function seedDeletedRepository(): Promise<void> {
+    const { writeMatchCache } = await import("../src/config.js");
+    writeMatchCache(dir, { "Service:usersservice": "n1", "Repository:usersrepository": "n2" });
+    runScanMock.mockReturnValue(asIs({ nodes: [asIs().nodes[0]!], edges: [] }));
+  }
+
+  it("--prune ile koddan silinen node cloud'dan da silinir (deleteNode çağrılır)", async () => {
+    await seedDeletedRepository();
+    const fakeApi = {
+      getGraph: vi.fn(async () => toBe()),
+      getRules: vi.fn(async () => RULES),
+      applyGraph: vi.fn(),
+      patchNode: vi.fn(),
+      deleteNode: vi.fn(async () => undefined),
+      deleteEdge: vi.fn(async () => undefined),
+    };
+    vi.spyOn(SolarchApi, "fromStoredCredentials").mockReturnValue(fakeApi as unknown as SolarchApi);
+
+    const { pushCommand } = await import("../src/commands/push.js");
+    await pushCommand({ rootDir: dir, yes: true, prune: true });
+
+    expect(fakeApi.deleteNode).toHaveBeenCalledTimes(1);
+    expect(fakeApi.deleteNode).toHaveBeenCalledWith("p1", "n2");
+    expect(fakeApi.deleteEdge).not.toHaveBeenCalled(); // edge node DETACH ile gider
+    expect(fakeApi.applyGraph).not.toHaveBeenCalled(); // eklenecek yok
+    expect(process.exitCode ?? 0).toBe(0);
+  });
+
+  it("--prune olmadan hiçbir şey silinmez (varsayılan additif, deleteNode çağrılmaz)", async () => {
+    await seedDeletedRepository();
+    const fakeApi = {
+      getGraph: vi.fn(async () => toBe()),
+      getRules: vi.fn(async () => RULES),
+      applyGraph: vi.fn(),
+      patchNode: vi.fn(),
+      deleteNode: vi.fn(async () => undefined),
+      deleteEdge: vi.fn(async () => undefined),
+    };
+    vi.spyOn(SolarchApi, "fromStoredCredentials").mockReturnValue(fakeApi as unknown as SolarchApi);
+
+    const { pushCommand } = await import("../src/commands/push.js");
+    await pushCommand({ rootDir: dir, yes: true }); // prune yok
+
+    expect(fakeApi.deleteNode).not.toHaveBeenCalled();
+    expect(fakeApi.deleteEdge).not.toHaveBeenCalled();
+    expect(process.exitCode ?? 0).toBe(0);
+  });
+
+  it("cloud'da zaten gitmiş öğe (404) silme akışını patlatmaz — idempotent", async () => {
+    await seedDeletedRepository();
+    const fakeApi = {
+      getGraph: vi.fn(async () => toBe()),
+      getRules: vi.fn(async () => RULES),
+      applyGraph: vi.fn(),
+      patchNode: vi.fn(),
+      deleteNode: vi.fn(async () => {
+        throw new ApiError("gone", "ERR_NODE_NOT_FOUND", 404);
+      }),
+      deleteEdge: vi.fn(async () => undefined),
+    };
+    vi.spyOn(SolarchApi, "fromStoredCredentials").mockReturnValue(fakeApi as unknown as SolarchApi);
+
+    const { pushCommand } = await import("../src/commands/push.js");
+    await pushCommand({ rootDir: dir, yes: true, prune: true });
+
+    expect(fakeApi.deleteNode).toHaveBeenCalledWith("p1", "n2");
+    expect(process.exitCode ?? 0).toBe(0); // 404 yutuldu, hata değil
   });
 });

@@ -48,6 +48,12 @@ export interface DiffResult {
   counts: { errors: number; warns: number; infos: number };
   /** Güncellenmiş eşleştirme cache'i — çağıran map.json'a yazar. */
   cache: MatchCache;
+  /** `push --prune` adayları: koddan SİLİNDİĞİ KESİN olan, cloud'da hâlâ duran
+   *  öğeler. Node: bir önceki taramada eşleşmişti (cache'te vardı), şimdi yok —
+   *  rename'i dışlar (rename'de cloud id yeni anahtar altında yeniden eşleşir).
+   *  Edge: iki ucu da eşleşen (kodda yaşayan) node'lar arası, kodda karşılığı
+   *  olmayan bağımlılık. "Henüz-çizilmiş-ama-yapılmamış" öğe içermez. */
+  removable: { nodes: CloudNode[]; edges: CloudEdge[] };
 }
 
 /* ── kural değerlendirme ─────────────────────────────────────────── */
@@ -324,6 +330,11 @@ export function diffGraphs(
     return false;
   };
 
+  // `push --prune`: iki ucu da eşleşen ama kodda karşılığı olmayan cloud edge'leri
+  // (kaldırılmış bağımlılıklar). Bu döngü zaten yalnız iki-ucu-eşleşen edge'leri
+  // değerlendirdiğinden, silinen node'lara değen edge'ler buraya hiç girmez
+  // (onları node DETACH temizler) — küme kendiliğinden ayrık.
+  const removableEdges: CloudEdge[] = [];
   for (const edge of toBe.edges) {
     const srcKey = cloudIdToCodeKey.get(edge.sourceNodeId);
     const tgtKey = cloudIdToCodeKey.get(edge.targetNodeId);
@@ -340,6 +351,7 @@ export function diffGraphs(
       // Service READS_CONFIG X taahhüdü karşılanır (servisler ConfigService inject eder).
       (edge.kind === "READS_CONFIG" && asIsEdgeSet.has(`${WILDCARD_SERVICE_KEY}|READS_CONFIG|${tgtKey}`));
     if (!satisfiedInCode) {
+      removableEdges.push(edge);
       findings.push({
         severity: "error",
         code: "DRIFT_EDGE_MISSING_IN_CODE",
@@ -404,5 +416,26 @@ export function diffGraphs(
     infos: findings.filter((f) => f.severity === "info").length,
   };
 
-  return { findings, matched: codeKeyToCloudId.size, counts, cache };
+  // `push --prune`: önceki taramada eşleşmiş (cache'te id'si olan) ama bu sefer
+  // eşleşmeyen, cloud'da hâlâ yaşayan node'lar = koddan silindiği KESİN olanlar.
+  // matchedCloudIds testi rename'i dışlar (rename'de aynı id yeni anahtarla
+  // yeniden eşleşir → matchedCloudIds'de olur → silme adayı sayılmaz).
+  const removableNodes: CloudNode[] = [];
+  const removableSeen = new Set<string>();
+  for (const cloudId of Object.values(previousCache)) {
+    if (removableSeen.has(cloudId)) continue;
+    if (matchedCloudIds.has(cloudId)) continue;
+    const cloudNode = cloudById.get(cloudId);
+    if (!cloudNode) continue; // cloud'dan zaten gitmiş
+    removableSeen.add(cloudId);
+    removableNodes.push(cloudNode);
+  }
+
+  return {
+    findings,
+    matched: codeKeyToCloudId.size,
+    counts,
+    cache,
+    removable: { nodes: removableNodes, edges: removableEdges },
+  };
 }

@@ -6,6 +6,7 @@ const result: DiffResult = {
   counts: { errors: 1, warns: 1, infos: 1 },
   matched: 3,
   cache: {},
+  removable: { nodes: [], edges: [] },
   findings: [
     {
       code: "DRIFT_ILLEGAL_EDGE",

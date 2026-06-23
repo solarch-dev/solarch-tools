@@ -16,7 +16,7 @@ import {
   type AsIsNode,
   type NodeKind,
 } from "@solarch/ast-core";
-import type { ApplyEdge, ApplyPayload, CloudGraph, RuleCatalog } from "../api.js";
+import type { ApplyEdge, ApplyPayload, CloudEdge, CloudGraph, CloudNode, RuleCatalog } from "../api.js";
 import type { MatchCache } from "../config.js";
 import { evaluateEdge, listFieldDrift } from "../diff/engine.js";
 
@@ -52,10 +52,22 @@ export interface PushPlan {
   illegalEdges: IllegalEdge[];
   /** Yeni node key → apply tempId (idMap'i map.json'a geri yazmak için). */
   tempIdByKey: Record<string, string>;
+  /** `--prune` ile: koddan silinen ve cloud'dan da kaldırılacak node'lar.
+   *  Node DELETE (DETACH) bağlı edge'leri de temizler. `--prune` yoksa boş. */
+  nodesToRemove: CloudNode[];
+  /** `--prune` ile: kodda karşılığı kalmayan, iki ucu da yaşayan cloud edge'leri
+   *  (kaldırılmış bağımlılıklar). `--prune` yoksa boş. */
+  edgesToRemove: CloudEdge[];
 }
 
 export function planIsEmpty(plan: PushPlan): boolean {
-  return plan.newNodes.length === 0 && plan.newEdges.length === 0 && plan.propertyUpdates.length === 0;
+  return (
+    plan.newNodes.length === 0 &&
+    plan.newEdges.length === 0 &&
+    plan.propertyUpdates.length === 0 &&
+    plan.nodesToRemove.length === 0 &&
+    plan.edgesToRemove.length === 0
+  );
 }
 
 const kindOfKey = (key: string): NodeKind => key.split(":")[0] as NodeKind;
@@ -70,6 +82,8 @@ export function buildPushPlan(
   toBe: CloudGraph,
   rules: RuleCatalog | null,
   matched: MatchCache,
+  /** `push --prune` adayları (diff motorundan). Verilmezse hiçbir şey silinmez. */
+  removals: { nodes: CloudNode[]; edges: CloudEdge[] } = { nodes: [], edges: [] },
 ): PushPlan {
   // Eşleşme yalnız cloud'da hâlâ yaşayan id'lerle geçerli.
   const cloudById = new Map(toBe.nodes.map((n) => [n.id, n]));
@@ -135,7 +149,15 @@ export function buildPushPlan(
     });
   }
 
-  return { newNodes, newEdges, propertyUpdates, illegalEdges, tempIdByKey };
+  return {
+    newNodes,
+    newEdges,
+    propertyUpdates,
+    illegalEdges,
+    tempIdByKey,
+    nodesToRemove: removals.nodes,
+    edgesToRemove: removals.edges,
+  };
 }
 
 function resolveEndpoint(

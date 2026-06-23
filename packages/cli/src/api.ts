@@ -246,4 +246,39 @@ export class SolarchApi {
       body: JSON.stringify(body),
     });
   }
+
+  /** Node sil — bağlı edge'ler de DETACH ile gider. 204 (gövdesiz);
+   *  cloud'da yoksa 404 ERR_NODE_NOT_FOUND (push bunu "zaten gitmiş" sayar). */
+  deleteNode(projectId: string, nodeId: string): Promise<void> {
+    return this.requestNoContent(`/projects/${projectId}/nodes/${nodeId}`, { method: "DELETE" });
+  }
+
+  /** Edge sil — uç node'lar etkilenmez. 204 (gövdesiz);
+   *  yoksa 404 ERR_EDGE_NOT_FOUND. */
+  deleteEdge(projectId: string, edgeId: string): Promise<void> {
+    return this.requestNoContent(`/projects/${projectId}/edges/${edgeId}`, { method: "DELETE" });
+  }
+
+  /** 204 No Content uç noktaları (DELETE) için — başarıda gövde yok, zarf yok.
+   *  Hata durumunda standart `{ success:false, error }` zarfını çözer. */
+  private async requestNoContent(path: string, init?: RequestInit): Promise<void> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.creds.apiUrl}${path}`, {
+        ...init,
+        headers: { Authorization: `Bearer ${this.creds.apiKey}`, ...init?.headers },
+      });
+    } catch (e) {
+      throw new ApiError(
+        `Cannot reach Solarch API at ${this.creds.apiUrl} — ${(e as Error).message}`,
+        "ERR_NETWORK",
+        0,
+      );
+    }
+    if (res.ok) return; // 204 — çözülecek gövde yok.
+    const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
+    const code = typeof body?.error?.code === "string" ? body.error.code : "ERR_UNKNOWN";
+    const message = typeof body?.error?.message === "string" ? body.error.message : `HTTP ${res.status}`;
+    throw new ApiError(message, code, res.status, (body?.error as Record<string, unknown>) ?? {});
+  }
 }

@@ -420,3 +420,45 @@ describe("diffGraphs", () => {
     expect(r.findings.filter((f) => f.code === "DRIFT_EDGE_NOT_IN_CLOUD")).toHaveLength(1);
   });
 });
+
+/* ── push --prune adayları (removable) ───────────────────────────── */
+
+describe("diffGraphs — removable (push --prune)", () => {
+  it("koddan silinen (önceden eşleşmiş) node cloud'da duruyorsa removable.nodes'a girer", () => {
+    // Kod yalnız UsersService içeriyor; Repository silinmiş. Cache önceki koşudan
+    // ikisini de biliyordu → n2 koddan silindiği KESİN (silme adayı).
+    const code = asIs({ nodes: [asIs().nodes[0]!], edges: [] });
+    const r = diffGraphs(code, toBe(), RULES, {
+      "Service:usersservice": "n1",
+      "Repository:usersrepository": "n2",
+    });
+    expect(r.removable.nodes.map((n) => n.id)).toEqual(["n2"]);
+    expect(r.removable.edges).toEqual([]);
+  });
+
+  it("geçmişi olmayan (ilk koşu) eşleşmeyen cloud node SİLİNMEZ — yalnız drift", () => {
+    const code = asIs({ nodes: [asIs().nodes[0]!], edges: [] });
+    const r = diffGraphs(code, toBe(), RULES, {}); // boş cache → geçmiş yok
+    expect(r.findings.some((f) => f.code === "DRIFT_NODE_MISSING_IN_CODE")).toBe(true);
+    expect(r.removable.nodes).toEqual([]); // "henüz yapılmamış" olabilir → silme adayı değil
+  });
+
+  it("cloud'da yeniden adlandırılan node silme adayı SAYILMAZ (rename ≠ silme)", () => {
+    const cloud = toBe();
+    // Cloud'da isim değişti: UsersService → AccountService (id aynı: n1).
+    cloud.nodes[0]!.properties = { ServiceName: "AccountService", Methods: [{ MethodName: "create" }, { MethodName: "list" }] };
+    // Kod hâlâ UsersService; cache eski anahtarı n1'e bağlar → n1 yeniden eşleşir.
+    const r = diffGraphs(asIs(), cloud, RULES, {
+      "Service:usersservice": "n1",
+      "Repository:usersrepository": "n2",
+    });
+    expect(r.removable.nodes).toEqual([]);
+  });
+
+  it("iki ucu eşleşen ama kodda olmayan cloud edge removable.edges'e girer (kaldırılmış bağımlılık)", () => {
+    // Kod CALLS edge'ini kaybetmiş ama iki node da yaşıyor.
+    const r = diffGraphs(asIs({ edges: [] }), toBe(), RULES, {});
+    expect(r.removable.edges.map((e) => e.id)).toEqual(["e1"]);
+    expect(r.removable.nodes).toEqual([]);
+  });
+});

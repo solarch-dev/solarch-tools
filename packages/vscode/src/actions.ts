@@ -28,6 +28,8 @@ import {
   writeGeneratedFiles,
   writeMatchCache,
   writeProjectConfig,
+  type CloudEdge,
+  type CloudNode,
   type PushPlan,
 } from "@solarch/cli/lib";
 import { CLOUD_TIMEOUT_MS, withTimeout } from "./shared.js";
@@ -217,9 +219,17 @@ export async function generateAction(rootDir: string): Promise<boolean> {
 
 /* ── push ────────────────────────────────────────────────────────── */
 
+interface Removable {
+  nodes: CloudNode[];
+  edges: CloudEdge[];
+}
+
 interface PreparedPush {
   plan: PushPlan;
   baseRevision: number;
+  /** Koddan silindiği KESİN olan, cloud'da duran öğeler (diff motorundan). Push
+   *  planı additif kalır; prune yalnız kullanıcı açıkça onaylarsa uygulanır. */
+  removable: Removable;
 }
 
 async function preparePlan(api: SolarchApi, rootDir: string, projectId: string): Promise<PreparedPush> {
@@ -231,10 +241,20 @@ async function preparePlan(api: SolarchApi, rootDir: string, projectId: string):
   const asIs = runScan(rootDir);
   const diff = diffGraphs(asIs, graph, rules, readMatchCache(rootDir));
   writeMatchCache(rootDir, diff.cache);
-  return { plan: buildPushPlan(asIs, graph, rules, diff.cache), baseRevision: graph.graphRevision };
+  // Plan additif (silme içermez); silme adaylarını ayrı taşırız.
+  return {
+    plan: buildPushPlan(asIs, graph, rules, diff.cache),
+    baseRevision: graph.graphRevision,
+    removable: diff.removable,
+  };
 }
 
-function describePlan(plan: PushPlan): string {
+function cloudNodeLabel(n: CloudNode): string {
+  const name = (n.properties[`${n.type}Name`] as string) ?? (n.properties.Name as string) ?? (n.properties.TableName as string) ?? n.id;
+  return `${n.type} "${name}"`;
+}
+
+function describePlan(plan: PushPlan, removable: Removable): string {
   const parts: string[] = [];
   if (plan.newNodes.length > 0) {
     const names = plan.newNodes.slice(0, 6).map((n) => `${n.kind} "${n.name}"`);
@@ -247,7 +267,31 @@ function describePlan(plan: PushPlan): string {
   if (plan.propertyUpdates.length > 0) {
     parts.push(`Property updates (${plan.propertyUpdates.length}): ${plan.propertyUpdates.map((u) => `${u.name} (${u.changedFields.join(", ")})`).join(", ")}`);
   }
+  if (removable.nodes.length > 0 || removable.edges.length > 0) {
+    const bits: string[] = [];
+    if (removable.nodes.length > 0) bits.push(`${removable.nodes.length} node(s): ${removable.nodes.slice(0, 6).map(cloudNodeLabel).join(", ")}`);
+    if (removable.edges.length > 0) bits.push(`${removable.edges.length} edge(s)`);
+    parts.push(`Removed from the code — choose "Push & prune" to delete from the canvas too:\n${bits.join("\n")}`);
+  }
   return parts.join("\n\n");
+}
+
+/** Silme adaylarını cloud'dan kaldır (prune onaylandıysa): önce edge'ler, sonra
+ *  node'lar (DETACH kendi edge'lerini de siler). 404 = zaten gitmiş, yutulur. */
+async function applyRemovals(api: SolarchApi, projectId: string, removable: Removable): Promise<number> {
+  let removed = 0;
+  const tolerate = async (fn: () => Promise<void>): Promise<void> => {
+    try {
+      await fn();
+      removed++;
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.code === "ERR_NODE_NOT_FOUND" || e.code === "ERR_EDGE_NOT_FOUND")) return;
+      throw e;
+    }
+  };
+  for (const e of removable.edges) await tolerate(() => api.deleteEdge(projectId, e.id));
+  for (const n of removable.nodes) await tolerate(() => api.deleteNode(projectId, n.id));
+  return removed;
 }
 
 export async function pushAction(rootDir: string): Promise<boolean> {
@@ -265,7 +309,7 @@ export async function pushAction(rootDir: string): Promise<boolean> {
   }
 
   try {
-    let { plan, baseRevision } = await vscode.window.withProgress(
+    let { plan, baseRevision, removable } = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Solarch: building push plan…" },
       () => preparePlan(api, rootDir, config.projectId),
     );
@@ -282,18 +326,42 @@ export async function pushAction(rootDir: string): Promise<boolean> {
       return false;
     }
 
+    const removableCount = removable.nodes.length + removable.edges.length;
+    const PRUNE = `Push & prune (delete ${removableCount})`;
+
+    // Eklenecek/güncellenecek bir şey yoksa ama koddan silinmiş öğe varsa, yalnız
+    // prune'u öner (yıkıcı → açık onay). Hiçbiri yoksa zaten senkron.
     if (planIsEmpty(plan)) {
-      void vscode.window.showInformationMessage("Solarch: already in sync — nothing to push.");
-      return false;
+      if (removableCount === 0) {
+        void vscode.window.showInformationMessage("Solarch: already in sync — nothing to push.");
+        return false;
+      }
+      const choice = await vscode.window.showWarningMessage(
+        `Push to "${config.projectName ?? "Solarch"}"? Code-side additions are in sync, but items were deleted from the code.`,
+        { modal: true, detail: describePlan(plan, removable) },
+        PRUNE,
+      );
+      if (choice !== PRUNE) return false;
+      return await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Solarch: pruning…" },
+        async () => {
+          const removed = await applyRemovals(api, config.projectId, removable);
+          void vscode.window.showInformationMessage(`Solarch: pruned ${removed} item(s) from the canvas.`);
+          return removed > 0;
+        },
+      );
     }
 
     const summary = `${plan.newNodes.length} node(s), ${plan.newEdges.length} edge(s), ${plan.propertyUpdates.length} property update(s)`;
+    // Silme adayı varsa ikinci, açıkça yıkıcı buton sun; varsayılan "Push" additif kalır.
+    const buttons = removableCount > 0 ? ["Push", PRUNE] : ["Push"];
     const choice = await vscode.window.showInformationMessage(
       `Push to "${config.projectName ?? "Solarch"}"? (${summary})`,
-      { modal: true, detail: describePlan(plan) },
-      "Push",
+      { modal: true, detail: describePlan(plan, removable) },
+      ...buttons,
     );
-    if (choice !== "Push") return false;
+    if (choice !== "Push" && choice !== PRUNE) return false;
+    const doPrune = choice === PRUNE;
 
     return await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: "Solarch: pushing…" },
@@ -340,7 +408,13 @@ export async function pushAction(rootDir: string): Promise<boolean> {
           }
         }
 
-        const done = `${plan.newNodes.length} node(s), ${plan.newEdges.length} edge(s), ${plan.propertyUpdates.length - skipped.length} property update(s) pushed.`;
+        // Silme (yalnız "Push & prune" seçildiyse) — additif adımlardan sonra.
+        const removed = doPrune ? await applyRemovals(api, config.projectId, removable) : 0;
+
+        const done =
+          `${plan.newNodes.length} node(s), ${plan.newEdges.length} edge(s), ${plan.propertyUpdates.length - skipped.length} property update(s)` +
+          (removed > 0 ? `, ${removed} removed` : "") +
+          " pushed.";
         if (skipped.length > 0) {
           void vscode.window.showWarningMessage(
             `Solarch: ${done} Skipped (changed in cloud meanwhile): ${skipped.join(", ")} — resolve on the canvas.`,

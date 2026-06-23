@@ -127,8 +127,9 @@ program
   .command("push")
   .description("Push code-side additions (nodes/edges) and list-property updates to Solarch Cloud")
   .option("--yes", "Skip the confirmation prompt (CI)")
-  .action(async (opts: { yes?: boolean }) => {
-    await pushCommand({ rootDir: rootDir(), yes: opts.yes });
+  .option("--prune", "Also delete nodes/edges removed from the code (destructive — shown and confirmed)")
+  .action(async (opts: { yes?: boolean; prune?: boolean }) => {
+    await pushCommand({ rootDir: rootDir(), yes: opts.yes, prune: opts.prune });
   });
 
 program
@@ -176,8 +177,9 @@ program
   .command("watch")
   .description("Daemon: watch files, run live bindings and report drift on change")
   .option("--no-drift", "Disable drift summaries (bindings only)")
-  .action(async (opts: { drift?: boolean }) => {
-    await watchCommand({ rootDir: rootDir(), noDrift: opts.drift === false });
+  .option("--auto-push", "Push code-side additions to the cloud on each change (additive only — never prunes)")
+  .action(async (opts: { drift?: boolean; autoPush?: boolean }) => {
+    await watchCommand({ rootDir: rootDir(), noDrift: opts.drift === false, autoPush: opts.autoPush });
   });
 
 program.parseAsync(process.argv).catch((e: Error) => {

@@ -6,12 +6,15 @@ import { SolarchApi, type CloudGraph, type RuleCatalog } from "../api.js";
 import { readMatchCache, readProjectConfig, writeMatchCache } from "../config.js";
 import { diffGraphs } from "../diff/engine.js";
 import { report } from "./bind.js";
+import { pushCommand } from "./push.js";
 import { runScan } from "./scan.js";
 
 export interface WatchOptions {
   rootDir: string;
   /** Disable drift summary — live binding only. */
   noDrift?: boolean;
+  /** Push code-side additions to the cloud on each change (additive only — never prunes). */
+  autoPush?: boolean;
 }
 
 const DEBOUNCE_MS = 400;
@@ -58,13 +61,15 @@ export async function watchCommand(opts: WatchOptions): Promise<void> {
     }
   };
 
-  const runDrift = (): void => {
+  const projectId = config?.projectId;
+
+  const runDrift = async (): Promise<void> => {
     if (!toBe) return;
     const asIs = runScan(rootDir);
     const cache = readMatchCache(rootDir);
     const result = diffGraphs(asIs, toBe, rules, cache);
     writeMatchCache(rootDir, result.cache);
-    const { errors, warns } = result.counts;
+    const { errors, warns, infos } = result.counts;
     if (errors === 0 && warns === 0) {
       console.log(pc.green(`✓ drift: clean (${result.matched} matched)`));
     } else {
@@ -72,6 +77,21 @@ export async function watchCommand(opts: WatchOptions): Promise<void> {
         (errors > 0 ? pc.red(`✗ drift: ${errors} error(s)`) : pc.yellow(`drift: ${warns} warning(s)`)) +
           pc.dim(` — run \`solarch diff\` for details`),
       );
+    }
+
+    // --auto-push: yalnız additif drift (kod fazlası node/edge ya da liste-property
+    // farkı) ve HATA YOKKEN pushla. Hata varsa (illegal edge / kodda-eksik) push
+    // reddeder ya da silme gerektirir — watch ASLA prune etmez, additif kalır.
+    if (opts.autoPush && projectId && errors === 0 && (warns > 0 || infos > 0)) {
+      console.log(pc.dim("auto-push: syncing code-side additions to the cloud…"));
+      try {
+        await pushCommand({ rootDir, yes: true });
+        // toBe artık eskidi (yeni node'lar cloud'a gitti) — tazele ki bir sonraki
+        // tur aynı eklemeleri tekrar drift sanıp pushlamasın.
+        toBe = await SolarchApi.fromStoredCredentials().getGraph(projectId);
+      } catch (e) {
+        console.log(pc.red(`auto-push failed: ${(e as Error).message}`));
+      }
     }
   };
 
@@ -88,7 +108,7 @@ export async function watchCommand(opts: WatchOptions): Promise<void> {
       pending.clear();
       console.log(pc.dim(`changed: ${changed.join(", ")}`));
       for (const rel of changed) syncBindingsFor(rel);
-      runDrift();
+      runDrift().catch((e) => console.log(pc.red(`drift failed: ${(e as Error).message}`)));
     }, DEBOUNCE_MS);
   };
 
@@ -102,7 +122,7 @@ export async function watchCommand(opts: WatchOptions): Promise<void> {
   watcher.on("add", onChange);
 
   // Initial state: print drift once on startup.
-  runDrift();
+  await runDrift().catch((e) => console.log(pc.red(`drift failed: ${(e as Error).message}`)));
 
   await new Promise<void>((resolveWait) => {
     const stop = () => {
