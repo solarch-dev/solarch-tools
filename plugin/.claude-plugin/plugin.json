@@ -1,0 +1,13 @@
+{
+  "name": "solarch",
+  "description": "Real architecture context, rule-checked mutations, and the surgical-fill work queue for AI agents working in NestJS codebases. The agent reads the live To-Be graph, learns the architecture rules, and every edge it adds passes the Rules Engine — then verifies the generated code against the design.",
+  "version": "0.7.2",
+  "author": {
+    "name": "Solidea",
+    "email": "info@solidea.tech"
+  },
+  "homepage": "https://solarch.dev",
+  "repository": "https://github.com/solarch-dev/solarch-tools",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "keywords": ["mcp", "architecture", "nestjs", "drift", "codegen", "ai-agents"]
+}

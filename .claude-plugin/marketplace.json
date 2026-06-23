@@ -1,0 +1,22 @@
+{
+  "name": "solarch-tools",
+  "description": "Solarch developer tools for Claude Code — real architecture context and rule-checked mutations over MCP for NestJS codebases.",
+  "owner": {
+    "name": "Solidea",
+    "email": "info@solidea.tech"
+  },
+  "plugins": [
+    {
+      "name": "solarch",
+      "description": "Real architecture context, rule-checked mutations, and the surgical-fill work queue for AI agents working in NestJS codebases.",
+      "version": "0.7.2",
+      "source": "./plugin",
+      "author": {
+        "name": "Solidea",
+        "email": "info@solidea.tech"
+      },
+      "homepage": "https://solarch.dev",
+      "keywords": ["mcp", "architecture", "nestjs", "codegen"]
+    }
+  ]
+}

@@ -1,14 +1,30 @@
 {
   "name": "@solarch/mcp",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Solarch MCP server — architecture context, rule checks and safe mutations for AI agents",
   "type": "module",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "homepage": "https://solarch.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/solarch-dev/solarch-tools.git",
+    "directory": "packages/mcp"
+  },
+  "keywords": [
+    "solarch",
+    "mcp",
+    "model-context-protocol",
+    "architecture",
+    "nestjs",
+    "ai-agents"
+  ],
   "bin": {
     "solarch-mcp": "./dist/index.js"
   },
   "main": "./dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsup src/index.ts --format esm --clean",
